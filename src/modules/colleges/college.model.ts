@@ -1,6 +1,9 @@
 import mongoose, { Schema } from 'mongoose';
-import { ICollege, CollegeVerificationStatus } from '../types';
-import { normalizeDomain } from '../utils/emailValidation';
+import { ICollege, CollegeVerificationStatus } from '../../types';
+import { normalizeDomain } from '../../utils/emailValidation';
+
+/** College snippet embedded in users, posts and feeds. */
+export const COLLEGE_SUMMARY_FIELDS = 'name code logo';
 
 const collegeSchema = new Schema<ICollege>(
   {

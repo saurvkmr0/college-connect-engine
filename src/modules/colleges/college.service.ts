@@ -1,15 +1,15 @@
 import { randomInt } from 'node:crypto';
 import { Types } from 'mongoose';
-import { College } from '../models/College';
-import { ICollege, CollegeVerificationStatus } from '../types';
-import { ApiError } from '../utils/apiError';
+import { ICollege, CollegeVerificationStatus } from '../../types';
+import { ApiError } from '../../utils/apiError';
 import {
   extractDomain,
   isValidDomain,
   isValidEmail,
   normalizeDomain,
   normalizeEmail,
-} from '../utils/emailValidation';
+} from '../../utils/emailValidation';
+import { College } from './college.model';
 
 /* ------------------------------------------------------------------ */
 /* Email -> college validation (reusable)                              */
@@ -142,6 +142,24 @@ export interface CollegeInput {
   logo?: string;
   active?: boolean;
 }
+
+const TEXT_FIELDS = ['name', 'code', 'country', 'state', 'city', 'address', 'description', 'logo'] as const;
+
+/**
+ * Builds a CollegeInput from an untrusted request body: only known fields, only
+ * strings (booleans for `active`). Fields that are absent stay undefined, which
+ * `updateCollege` reads as "leave unchanged".
+ */
+export const parseCollegeInput = (body: unknown): CollegeInput => {
+  const source = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const input: CollegeInput = {};
+  for (const field of TEXT_FIELDS) {
+    if (typeof source[field] === 'string') input[field] = source[field] as string;
+  }
+  if (typeof source.active === 'boolean') input.active = source.active;
+  if (source.domains !== undefined) input.domains = source.domains as string[];
+  return input;
+};
 
 export const getCollegeOrThrow = async (collegeId: string): Promise<ICollege> => {
   if (!Types.ObjectId.isValid(collegeId)) {

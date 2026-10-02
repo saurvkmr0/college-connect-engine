@@ -1,25 +1,36 @@
 import mongoose from 'mongoose';
 import app from './app';
 import { config } from './config';
-import { connectRedis } from './config/redis';
+import { closeRedis, connectRedis } from './config/redis';
 
-const startServer = async () => {
-  try {
-    await mongoose.connect(config.mongodbUri);
-    console.log('Connected to MongoDB');
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-    // OTP storage and rate limiting live in Redis. A Redis outage must not
-    // stop the API: verification endpoints simply fail closed (HTTP 503).
-    await connectRedis();
+const start = async () => {
+  await mongoose.connect(config.mongodbUri);
+  console.log('Connected to MongoDB');
 
-    app.listen(config.port, () => {
-      console.log(`Server running on port ${config.port}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  // A Redis outage must not stop the API: OTP verification and admin login fail
+  // closed (503), user login/signup rate limits fail open, until Redis is back.
+  await connectRedis();
+
+  const server = app.listen(config.port, () => {
+    console.log(`Server running on port ${config.port} (${process.env.NODE_ENV || 'development'})`);
+  });
+
+  // Let in-flight requests finish before exiting (deploys, Ctrl+C).
+  const shutdown = () => {
+    console.log('Shutting down...');
+    setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS).unref();
+    server.close(async () => {
+      await Promise.all([mongoose.disconnect(), closeRedis()]);
+      process.exit(0);
     });
-  } catch (error) {
-    console.error('Failed to connect to MongoDB:', error);
-    process.exit(1);
-  }
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 };
 
-startServer();
+start().catch((error) => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});

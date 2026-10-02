@@ -5,9 +5,9 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "lint": "eslint src/"
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -15,12 +15,10 @@ const providers: Record<string, EmailProvider> = {
 
 let overrideProvider: EmailProvider | null = null;
 
-/** Swap the active provider at runtime (tests, or future dynamic config). */
+/** Swap the active provider at runtime (used by tests to capture outgoing mail). */
 export const setEmailProvider = (provider: EmailProvider | null): void => {
   overrideProvider = provider;
 };
-
-export const listEmailProviders = (): string[] => Object.keys(providers);
 
 export const getEmailProvider = (): EmailProvider => {
   if (overrideProvider) return overrideProvider;
@@ -30,7 +28,7 @@ export const getEmailProvider = (): EmailProvider => {
 
   if (!provider) {
     throw new Error(
-      `Unknown EMAIL_PROVIDER "${config.email.provider}". Available: ${listEmailProviders().join(', ')}`
+      `Unknown EMAIL_PROVIDER "${config.email.provider}". Available: ${Object.keys(providers).join(', ')}`
     );
   }
   return provider;

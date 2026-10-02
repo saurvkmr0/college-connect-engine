@@ -1,11 +1,10 @@
-import { College } from '../models/College';
-import { User } from '../models/User';
-import { IUser } from '../types';
-import { ApiError } from '../utils/apiError';
-import { isValidEmail, normalizeEmail } from '../utils/emailValidation';
-import { validateCollegeEmail } from './college.service';
-import { sendEmail } from './email/emailProvider';
-import { buildOtpEmail } from './email/templates';
+import { sendEmail } from '../../services/email/emailProvider';
+import { buildOtpEmail } from '../../services/email/templates';
+import { ApiError } from '../../utils/apiError';
+import { isValidEmail, normalizeEmail } from '../../utils/emailValidation';
+import { College } from '../colleges/college.model';
+import { validateCollegeEmail } from '../colleges/college.service';
+import { User, isUserVerified } from '../users/user.model';
 import {
   deleteOtpRecord,
   generateOtp,
@@ -27,10 +26,6 @@ export interface VerifiedCollege {
   id: string;
   name: string;
 }
-
-/** True when the user already passed verification (new flow or legacy flag). */
-export const isUserVerified = (user: IUser): boolean =>
-  Boolean(user.collegeVerification?.verified || user.collegeEmailVerified);
 
 /**
  * Step 1: validate the email, resolve the college from its domain, store a
@@ -100,7 +95,7 @@ export const requestOtp = async (userId: string, rawEmail: unknown): Promise<voi
       expiresInMinutes: Math.round(OTP_TTL_SECONDS / 60),
     });
     await sendEmail({ to: email, subject, text, html });
-  } catch (error) {
+  } catch {
     // The code never reached the user - invalidate it rather than leave it live.
     await deleteOtpRecord(userId);
     throw new ApiError(502, 'EMAIL_SEND_FAILED', 'We could not send the verification email. Please try again.');

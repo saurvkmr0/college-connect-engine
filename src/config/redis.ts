@@ -1,13 +1,15 @@
 import { createClient, RedisClientType } from 'redis';
 import { config } from './index';
+import { ApiError } from '../utils/apiError';
 
 /** How long startup waits for Redis before continuing without it. */
 const CONNECT_TIMEOUT_MS = 5000;
+/** Per-command timeout so a hung Redis never hangs a request. */
+const COMMAND_TIMEOUT_MS = 3000;
 
 /**
- * Shared Redis client used for OTP storage and rate limiting.
- * A single client is created for the whole process - no other Redis
- * connections should be introduced elsewhere in the codebase.
+ * The single Redis client for the process (OTP storage + rate limiting).
+ * Do not create other connections - go through `redisCommand` instead.
  */
 export const redisClient: RedisClientType = createClient({
   url: config.redisUrl,
@@ -27,10 +29,14 @@ redisClient.on('ready', () => {
   console.log('Connected to Redis');
 });
 
+const timeout = (ms: number, message: string) =>
+  new Promise<never>((_resolve, reject) => {
+    setTimeout(() => reject(new Error(message)), ms).unref?.();
+  });
+
 /**
  * Connect to Redis, but never block startup for more than CONNECT_TIMEOUT_MS.
- * Returns true when Redis is usable. A Redis outage does not stop the API:
- * verification endpoints fail closed with 503 instead.
+ * Returns true when Redis is usable.
  */
 export const connectRedis = async (): Promise<boolean> => {
   if (redisClient.isReady) return true;
@@ -42,23 +48,16 @@ export const connectRedis = async (): Promise<boolean> => {
   attempt.catch(() => undefined);
 
   try {
-    await Promise.race([
-      attempt,
-      new Promise<void>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('Redis connect timeout')), CONNECT_TIMEOUT_MS).unref?.()
-      ),
-    ]);
+    await Promise.race([attempt, timeout(CONNECT_TIMEOUT_MS, 'Redis connect timeout')]);
     return true;
   } catch (error) {
     console.warn(
-      `Redis not reachable at ${config.redisUrl} - college verification will fail closed (HTTP 503) until Redis is available` +
+      'Redis not reachable - OTP verification and admin login fail closed (HTTP 503) until it is available' +
         (error instanceof Error ? ` (${error.message})` : '')
     );
     return false;
   }
 };
-
-export const isRedisReady = (): boolean => redisClient.isReady;
 
 export const closeRedis = async (): Promise<void> => {
   try {
@@ -67,3 +66,32 @@ export const closeRedis = async (): Promise<void> => {
     redisClient.disconnect();
   }
 };
+
+/**
+ * Runs a Redis command with a readiness check and a timeout.
+ * Throws 503 SERVICE_UNAVAILABLE when Redis is unusable: callers fail closed
+ * by default, or catch it to fail open.
+ */
+export const redisCommand = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const unavailable = () =>
+    new ApiError(503, 'SERVICE_UNAVAILABLE', 'Service is temporarily unavailable. Please try again later.');
+
+  if (!redisClient.isReady) throw unavailable();
+  try {
+    return await Promise.race([fn(), timeout(COMMAND_TIMEOUT_MS, 'Redis command timed out')]);
+  } catch (error) {
+    console.error('[redis] command failed:', error instanceof Error ? error.message : error);
+    throw unavailable();
+  }
+};
+
+/** Fixed-window counter: increments `key` and starts the window on the first hit. Returns the new count. */
+export const incrementWindow = (key: string, windowSeconds: number): Promise<number> =>
+  redisCommand(async () => {
+    const count = await redisClient.incr(key);
+    // First hit (or a lost expiry) starts the window.
+    if (count === 1 || (await redisClient.ttl(key)) < 0) {
+      await redisClient.expire(key, windowSeconds);
+    }
+    return count;
+  });

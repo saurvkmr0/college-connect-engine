@@ -1,7 +1,6 @@
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
-import { config } from '../config';
-import { isRedisReady, redisClient } from '../config/redis';
-import { ApiError } from '../utils/apiError';
+import { config } from '../../config';
+import { incrementWindow, redisClient, redisCommand } from '../../config/redis';
 
 /**
  * All OTP/rate-limit constants are fixed by product requirements and are
@@ -13,9 +12,6 @@ export const RESEND_COOLDOWN_SECONDS = 60; // 1 request / minute
 export const HOURLY_REQUEST_LIMIT = 5; // 5 requests / hour
 export const HOURLY_WINDOW_SECONDS = 3600;
 export const MAX_VERIFY_ATTEMPTS = 5; // 5 wrong codes per OTP
-
-const REDIS_TIMEOUT_MS = 3000;
-const SERVICE_UNAVAILABLE = 'Verification service is temporarily unavailable. Please try again later.';
 
 /** Redis keys - see README for the full list. */
 export const otpKey = (userId: string) => `college-verification:otp:${userId}`;
@@ -31,34 +27,6 @@ export interface OtpRecord {
   otpHash: string;
   attempts: number;
 }
-
-const serviceUnavailable = (): ApiError =>
-  new ApiError(503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE);
-
-const withTimeout = <T>(promise: Promise<T>): Promise<T> =>
-  Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) =>
-      setTimeout(() => reject(new Error('Redis command timed out')), REDIS_TIMEOUT_MS).unref?.()
-    ),
-  ]);
-
-/**
- * Runs a Redis command with availability checks, a timeout and consistent
- * 503 errors. Verification fails closed when Redis is unreachable, so rate
- * limits can never be bypassed.
- */
-const redisCall = async <T>(fn: () => Promise<T>): Promise<T> => {
-  if (!isRedisReady()) throw serviceUnavailable();
-
-  try {
-    return await withTimeout(fn());
-  } catch (error) {
-    if (error instanceof ApiError) throw error;
-    console.error('[otp] redis error:', error instanceof Error ? error.message : error);
-    throw serviceUnavailable();
-  }
-};
 
 /* ------------------------------------------------------------------ */
 /* OTP generation + hashing                                            */
@@ -88,13 +56,13 @@ export const verifyOtpHash = (otp: string, storedHash: string): boolean => {
 
 /** Writes the record with a 5 minute TTL. Overwriting invalidates any previous OTP. */
 export const saveOtpRecord = async (userId: string, record: OtpRecord): Promise<void> => {
-  await redisCall(() =>
+  await redisCommand(() =>
     redisClient.set(otpKey(userId), JSON.stringify(record), { EX: OTP_TTL_SECONDS })
   );
 };
 
 export const getOtpRecord = async (userId: string): Promise<OtpRecord | null> => {
-  const raw = await redisCall(() => redisClient.get(otpKey(userId)));
+  const raw = await redisCommand(() => redisClient.get(otpKey(userId)));
   if (!raw) return null;
 
   try {
@@ -112,13 +80,13 @@ export const getOtpRecord = async (userId: string): Promise<OtpRecord | null> =>
 
 /** Persists attempt counters WITHOUT extending the original 5 minute TTL. */
 export const saveOtpRecordKeepingTtl = async (userId: string, record: OtpRecord): Promise<void> => {
-  await redisCall(() =>
+  await redisCommand(() =>
     redisClient.set(otpKey(userId), JSON.stringify(record), { KEEPTTL: true })
   );
 };
 
 export const deleteOtpRecord = async (userId: string): Promise<void> => {
-  await redisCall(() => redisClient.del(otpKey(userId)));
+  await redisCommand(() => redisClient.del(otpKey(userId)));
 };
 
 /* ------------------------------------------------------------------ */
@@ -127,31 +95,21 @@ export const deleteOtpRecord = async (userId: string): Promise<void> => {
 
 /** Seconds left before another OTP can be requested (0 when allowed). */
 export const getResendCooldown = async (userId: string): Promise<number> => {
-  const ttl = await redisCall(() => redisClient.ttl(resendKey(userId)));
+  const ttl = await redisCommand(() => redisClient.ttl(resendKey(userId)));
   return ttl > 0 ? ttl : 0;
 };
 
 export const startResendCooldown = async (userId: string): Promise<void> => {
-  await redisCall(() =>
+  await redisCommand(() =>
     redisClient.set(resendKey(userId), '1', { EX: RESEND_COOLDOWN_SECONDS })
   );
 };
 
 /** Increments the hourly counter and returns the new value. */
-export const incrementHourlyRequests = async (userId: string): Promise<number> => {
-  return redisCall(async () => {
-    const key = hourlyKey(userId);
-    const count = await redisClient.incr(key);
-    const ttl = await redisClient.ttl(key);
-    // First hit (or a lost expiry) starts the 1 hour window.
-    if (count === 1 || ttl < 0) {
-      await redisClient.expire(key, HOURLY_WINDOW_SECONDS);
-    }
-    return count;
-  });
-};
+export const incrementHourlyRequests = (userId: string): Promise<number> =>
+  incrementWindow(hourlyKey(userId), HOURLY_WINDOW_SECONDS);
 
 /** Clears rate-limit state - used after a successful verification. */
 export const clearVerificationRateLimits = async (userId: string): Promise<void> => {
-  await redisCall(() => redisClient.del([resendKey(userId), hourlyKey(userId)]));
+  await redisCommand(() => redisClient.del([resendKey(userId), hourlyKey(userId)]));
 };

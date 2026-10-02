@@ -1,5 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
-import { ITag } from '../types';
+import { ITag } from '../../types';
 
 const tagSchema = new Schema<ITag>(
   {
@@ -8,5 +8,8 @@ const tagSchema = new Schema<ITag>(
   },
   { timestamps: true }
 );
+
+// Trending tags.
+tagSchema.index({ postCount: -1 });
 
 export const Tag = mongoose.model<ITag>('Tag', tagSchema);

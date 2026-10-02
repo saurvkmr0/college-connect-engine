@@ -32,6 +32,7 @@ export interface IUser extends Document {
   _id: Types.ObjectId;
   name: string;
   email: string;
+  /** bcrypt hash. `select: false` - load it explicitly with `.select('+password')`. */
   password: string;
   role: UserRole;
   college?: Types.ObjectId;
@@ -92,17 +93,28 @@ export interface IComment extends Document {
   updatedAt: Date;
 }
 
-export interface IFollow extends Document {
-  _id: Types.ObjectId;
-  follower: Types.ObjectId;
-  following: Types.ObjectId;
-  createdAt: Date;
-}
-
 export interface ITag extends Document {
   _id: Types.ObjectId;
   name: string;
   postCount: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** The signed-in user, attached to `req.user` by `authenticate`. Role and college come from the DB, not the token. */
+export interface AuthUser {
+  userId: string;
+  email: string;
+  role: UserRole;
+  collegeId?: string;
+  /** Has a college and a verified college email - required to post or interact. */
+  verified: boolean;
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: AuthUser;
+    }
+  }
 }

@@ -1,80 +1,135 @@
 # College Connect - Backend
 
+Express + TypeScript + MongoDB (Mongoose) + Redis.
+
 ## Setup
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
+1. `npm install`
+2. `cp .env.example .env` and fill it in (every variable is documented there).
+   The server refuses to start without `JWT_SECRET` (32+ chars) and, in production,
+   without `MONGODB_URI`, `REDIS_URL` and `CLIENT_URL`.
+3. Start Redis: `redis-server` (the API still boots without it - see "Redis" below).
+4. `npm run dev` (watch mode) - or `npm run build && npm start` for production.
+5. `npm run typecheck` before committing.
 
-2. Configure environment:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your MongoDB Atlas URI and JWT secret
-   ```
+## Project structure
 
-3. Start Redis (used for OTP storage and rate limiting):
-   ```bash
-   redis-server
-   # The API still boots without Redis, but college verification
-   # fails closed with HTTP 503 until Redis is reachable.
-   ```
+```
+src/
+  app.ts               express app: global middleware + one line per feature module
+  server.ts            connects Mongo/Redis, starts HTTP, graceful shutdown
+  config/              env (validated at startup), Redis client + helpers
+  middleware/          auth (authenticate, requireRole, requireVerified), error, rateLimit
+  utils/               ApiError + asyncHandler, request input helpers, jwt, email validation
+  types/               shared enums/interfaces, req.user typing
+  services/email/      email provider adapters (mailgun | log)
+  modules/<feature>/   everything for one feature
+    <feature>.routes.ts      URL -> middleware -> controller
+    <feature>.controller.ts  HTTP in/out only
+    <feature>.service.ts     business logic reused across handlers (when needed)
+    <feature>.model.ts       Mongoose schema, indexes, field constants
+```
 
-4. Run development server:
-   ```bash
-   npm run dev
-   ```
+Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`.
+
+### Adding a feature
+
+1. Create `src/modules/<feature>/` with routes + controller (+ model/service if needed).
+2. Mount the router in `app.ts`.
+3. Follow the conventions below - no other wiring is required.
+
+### Conventions
+
+- **Errors:** `throw new ApiError(status, CODE, message)` anywhere. Wrap async handlers in
+  `asyncHandler`; never write try/catch just to send a 500. The error middleware maps
+  Mongoose errors (bad id -> 404, validation -> 400, duplicate key -> 409) and body-parser
+  errors for you. Every error response is `{ success: false, error: { code, message } }`.
+- **Input:** read every user string with `str()` (blocks `{ "$gt": "" }` NoSQL injection),
+  escape anything going into `$regex` with `escapeRegex()`, paginate with `parsePagination()`.
+  Put limits (`maxlength`, `enum`, `min/max`) in the schema - they run on create and on
+  updates with `runValidators: true`.
+- **Auth:** `authenticate` loads the user once and sets `req.user`
+  (`userId, email, role, collegeId, verified`) from the DB. Use `requireRole(...)` and
+  `requireVerified` instead of re-querying the user in controllers.
+- **Never leak private fields:** `password` is `select: false`. When returning other users
+  use `PUBLIC_USER_FIELDS` / `AUTHOR_FIELDS` (users) and `COLLEGE_SUMMARY_FIELDS` - never
+  emails or verification data.
+- **Concurrency:** toggles and counters use atomic `$addToSet` / `$pull` / `$inc`,
+  not read-modify-save.
+- **Reads:** use `.lean()` for read-only queries and `Promise.all` for independent ones.
+- **`ponytail:` comments** mark deliberate simplifications with a known ceiling and the upgrade path.
+
+## Access rules
+
+| Who | Can |
+| --- | --- |
+| Signed out | sign up / log in |
+| Signed in, **not** college-verified | read the global feed (all global posts), view profiles/colleges |
+| College-verified | post, like, comment, follow, read their college feed |
+| Faculty / staff / admin (verified) | + upvote |
+| Admin (env login) | admin panel: colleges + domains |
+
+College-type posts are visible only to members of that college (others get 404).
+
+## Redis
+
+Used for OTP storage and rate limiting. If Redis is down the API still runs:
+OTP endpoints and admin login fail closed (`503`), signup/login rate limits fail open.
+
+| Key | Purpose | TTL |
+| --- | --- | --- |
+| `rate:login:{ip}:{email}` | 10 login attempts | 15 min |
+| `rate:admin-login:{ip}` | 5 admin login attempts | 15 min |
+| `rate:signup:{ip}` | 20 signups | 1 h |
+| `college-verification:*` | see "College email verification" | |
+
+Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 
 ## API Endpoints
 
 ### Auth
-- `POST /api/auth/signup` - Create account (only `student`, `faculty`, `staff` - `admin` is ignored)
+- `POST /api/auth/signup` - Create account (`student`, `faculty`, `staff`; anything else -> student). Password 8-72 chars.
 - `POST /api/auth/login` - Sign in
-- `POST /api/auth/admin-login` - Admin panel sign-in (credentials come from `ADMIN_EMAIL` / `ADMIN_PASSWORD`)
-- `GET /api/auth/me` - Get current user
-- `PATCH /api/auth/profile` - Update profile
+- `POST /api/auth/admin-login` - Admin panel sign-in (`ADMIN_EMAIL` / `ADMIN_PASSWORD`)
+- `GET /api/auth/me` - Current user (same shape as signup/login `user`)
+- `PATCH /api/auth/profile` - Update `name`, `bio`, `department`, `avatar`, `graduationYear`
 
 ### College verification
-- `POST /api/college-verification/request-otp` - Email a 6-digit code to the college address (authenticated)
-- `POST /api/college-verification/verify-otp` - Verify the code and mark the user verified (authenticated)
+- `POST /api/college-verification/request-otp` - Email a 6-digit code to the college address
+- `POST /api/college-verification/verify-otp` - Verify the code and mark the user verified
 
 ### Users
-- `GET /api/users/search?query=` - Search users
-- `GET /api/users/:userId` - Get user profile
-- `POST /api/users/:userId/follow` - Follow/unfollow user
-- `GET /api/users/:userId/followers` - Get followers
-- `GET /api/users/:userId/following` - Get following
+- `GET /api/users/search?query=` - Search users by name
+- `GET /api/users/:userId` - Public profile
+- `POST /api/users/:userId/follow` - Follow/unfollow (verified)
+- `GET /api/users/:userId/followers` / `following`
 
 ### Colleges
-- `POST /api/colleges/request` - Request new college
 - `GET /api/colleges` - List approved colleges
-- `GET /api/colleges/:collegeId` - Get college details
-- `POST /api/colleges/:collegeId/approve` - Approve college (admin)
-- `POST /api/colleges/:collegeId/follow` - Follow college
+- `GET /api/colleges/:collegeId` - College details, member counts, recent global posts
 
 ### Colleges - admin only
 - `POST /api/colleges` - Create college
 - `GET /api/colleges/admin/list` - List all colleges (`?active=true|false`, `?query=`)
 - `PATCH /api/colleges/:collegeId` - Update college fields
-- `POST /api/colleges/:collegeId/enable` - Enable college
-- `POST /api/colleges/:collegeId/disable` - Disable college
+- `POST /api/colleges/:collegeId/enable` / `disable`
 - `PUT /api/colleges/:collegeId/domains` - Replace domain list
 - `POST /api/colleges/:collegeId/domains` - Add domains
 - `DELETE /api/colleges/:collegeId/domains/:domain` - Remove a domain
 
 ### Posts
-- `POST /api/posts` - Create post
+- `POST /api/posts` - Create post (verified; max 10 tags, 4 images)
 - `GET /api/posts/:postId` - Get post
-- `DELETE /api/posts/:postId` - Delete post
-- `POST /api/posts/:postId/like` - Toggle like
-- `POST /api/posts/:postId/upvote` - Toggle upvote (faculty/staff only)
-- `POST /api/posts/:postId/comments` - Add comment
-- `GET /api/posts/:postId/comments` - Get comments
+- `DELETE /api/posts/:postId` - Delete own post
+- `POST /api/posts/:postId/like` - Toggle like (verified)
+- `POST /api/posts/:postId/upvote` - Toggle upvote (verified faculty/staff/admin)
+- `POST /api/posts/:postId/comments` - Add comment (verified)
+- `GET /api/posts/:postId/comments?page=&limit=` - Comments
 
-### Feed
-- `GET /api/feed/global` - Global feed
-- `GET /api/feed/college` - College feed
-- `GET /api/feed/explore` - Explore feed
+### Feed (all support `?page=&limit=`, limit max 50)
+- `GET /api/feed/global` - Global feed (`?tag=` to filter)
+- `GET /api/feed/college` - College feed (verified)
+- `GET /api/feed/explore` - All global posts, most upvoted first
 - `GET /api/feed/tags/trending` - Trending tags
 
 ## Admin panel

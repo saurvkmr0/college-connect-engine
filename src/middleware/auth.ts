@@ -1,79 +1,58 @@
-import { Request, Response, NextFunction } from 'express';
-import { verifyToken, JwtPayload } from '../utils/jwt';
-import { User } from '../models/User';
+import { RequestHandler } from 'express';
+import { User, isUserVerified } from '../modules/users/user.model';
+import { UserRole } from '../types';
+import { ApiError, asyncHandler } from '../utils/apiError';
+import { JwtPayload, verifyToken } from '../utils/jwt';
 
-export interface AuthRequest extends Request {
-  user?: JwtPayload;
-}
+/**
+ * Verifies the Bearer token and loads the user once per request.
+ * `req.user.role` comes from the DB, so demoting a user takes effect immediately
+ * instead of when their token expires.
+ */
+export const authenticate = asyncHandler(async (req, _res, next) => {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) throw new ApiError(401, 'UNAUTHORIZED', 'No token provided');
 
-export const authenticate = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+  let payload: JwtPayload;
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ message: 'No token provided' });
-      return;
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = verifyToken(token);
-
-    const user = await User.findById(decoded.userId);
-    if (!user) {
-      res.status(401).json({ message: 'User not found' });
-      return;
-    }
-
-    req.user = decoded;
-    next();
+    payload = verifyToken(header.slice('Bearer '.length));
   } catch {
-    res.status(401).json({ message: 'Invalid token' });
+    throw new ApiError(401, 'UNAUTHORIZED', 'Invalid token');
   }
-};
 
-export const requireRole = (...roles: string[]) => {
-  return (req: AuthRequest, res: Response, next: NextFunction): void => {
-    if (!req.user) {
-      res.status(401).json({ message: 'Not authenticated' });
-      return;
-    }
-    if (!roles.includes(req.user.role)) {
-      res.status(403).json({ message: 'Insufficient permissions' });
-      return;
+  const user = await User.findById(payload.userId)
+    .select('email role college collegeEmailVerified collegeVerification.verified')
+    .lean();
+  if (!user) throw new ApiError(401, 'UNAUTHORIZED', 'User not found');
+
+  req.user = {
+    userId: user._id.toString(),
+    email: user.email,
+    role: user.role,
+    collegeId: user.college?.toString(),
+    verified: Boolean(user.college) && isUserVerified(user),
+  };
+  next();
+});
+
+/** Use after `authenticate`. */
+export const requireRole =
+  (...roles: UserRole[]): RequestHandler =>
+  (req, _res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      throw new ApiError(403, 'FORBIDDEN', 'Insufficient permissions');
     }
     next();
   };
-};
 
-export const requireCollegeVerification = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    if (!req.user) {
-      res.status(401).json({ message: 'Not authenticated' });
-      return;
-    }
-
-    const user = await User.findById(req.user.userId);
-    if (!user) {
-      res.status(401).json({ message: 'User not found' });
-      return;
-    }
-
-    if (!user.college || !user.collegeEmailVerified) {
-      res.status(403).json({
-        message: 'College verification required. Please verify your college email.',
-      });
-      return;
-    }
-
-    next();
-  } catch {
-    res.status(500).json({ message: 'Server error' });
+/** Use after `authenticate`. Unverified users can read the global feed but cannot post or interact. */
+export const requireVerified: RequestHandler = (req, _res, next) => {
+  if (!req.user?.verified) {
+    throw new ApiError(
+      403,
+      'VERIFICATION_REQUIRED',
+      'College verification required. Please verify your college email.'
+    );
   }
+  next();
 };

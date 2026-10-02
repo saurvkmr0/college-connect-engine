@@ -2,45 +2,38 @@ import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import { config } from './config';
-import authRoutes from './routes/authRoutes';
-import userRoutes from './routes/userRoutes';
-import collegeRoutes from './routes/collegeRoutes';
-import collegeVerificationRoutes from './routes/collegeVerificationRoutes';
-import postRoutes from './routes/postRoutes';
-import feedRoutes from './routes/feedRoutes';
+import { errorHandler, notFound } from './middleware/error';
+import authRoutes from './modules/auth/auth.routes';
+import collegeRoutes from './modules/colleges/college.routes';
+import feedRoutes from './modules/feed/feed.routes';
+import postRoutes from './modules/posts/post.routes';
+import userRoutes from './modules/users/user.routes';
+import verificationRoutes from './modules/verification/verification.routes';
 
 const app = express();
 
-// Middleware
-app.use(cors({
-  origin: config.clientUrl,
-  credentials: true,
-}));
-app.use(express.json());
-app.use(morgan('dev'));
+app.disable('x-powered-by');
+app.set('trust proxy', config.trustProxy);
+// Flat query strings only: `?tag[$ne]=x` stays a plain string key instead of becoming an object.
+app.set('query parser', 'simple');
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/colleges', collegeRoutes);
-app.use('/api/college-verification', collegeVerificationRoutes);
-app.use('/api/posts', postRoutes);
-app.use('/api/feed', feedRoutes);
+app.use(cors({ origin: config.clientUrl, credentials: true }));
+app.use(express.json({ limit: '100kb' }));
+app.use(morgan(config.isProd ? 'combined' : 'dev'));
 
-// Health check
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// 404 handler
-app.use((_req, res) => {
-  res.status(404).json({ message: 'Route not found' });
-});
+// One line per feature module - add new modules here.
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/colleges', collegeRoutes);
+app.use('/api/college-verification', verificationRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api/feed', feedRoutes);
 
-// Error handler
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ message: 'Internal server error' });
-});
+app.use(notFound);
+app.use(errorHandler);
 
 export default app;
