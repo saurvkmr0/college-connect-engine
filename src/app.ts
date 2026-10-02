@@ -5,6 +5,7 @@ import { config } from './config';
 import authRoutes from './routes/authRoutes';
 import userRoutes from './routes/userRoutes';
 import collegeRoutes from './routes/collegeRoutes';
+import collegeVerificationRoutes from './routes/collegeVerificationRoutes';
 import postRoutes from './routes/postRoutes';
 import feedRoutes from './routes/feedRoutes';
 
@@ -22,6 +23,7 @@ app.use(morgan('dev'));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/colleges', collegeRoutes);
+app.use('/api/college-verification', collegeVerificationRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/feed', feedRoutes);
 

@@ -1,5 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import { ICollege, CollegeVerificationStatus } from '../types';
+import { normalizeDomain } from '../utils/emailValidation';
 
 const collegeSchema = new Schema<ICollege>(
   {
@@ -14,8 +15,54 @@ const collegeSchema = new Schema<ICollege>(
       enum: Object.values(CollegeVerificationStatus),
       default: CollegeVerificationStatus.PENDING,
     },
+    // --- College email verification fields ---
+    domains: {
+      type: [String],
+      default: [],
+      trim: true,
+      lowercase: true,
+      validate: {
+        validator: (domains: string[]) =>
+          domains.every((domain) => typeof domain === 'string' && domain.length > 0),
+        message: 'Domains must be non-empty strings',
+      },
+    },
+    country: { type: String, trim: true },
+    state: { type: String, trim: true },
+    city: { type: String, trim: true },
+    active: { type: Boolean, default: true },
   },
   { timestamps: true }
+);
+
+/**
+ * Domains are always stored normalized: lowercase, trimmed, without `@`.
+ * The service layer does the same thing before saving; this hook guarantees
+ * the invariant even for direct model writes.
+ */
+collegeSchema.pre('validate', function (next) {
+  if (Array.isArray(this.domains)) {
+    this.domains = this.domains
+      .map((domain) => normalizeDomain(domain))
+      .filter((domain): domain is string => domain.length > 0);
+  }
+  next();
+});
+
+/**
+ * One domain may belong to at most one college.
+ * The partial filter keeps colleges without domains (and legacy documents)
+ * out of the index so they do not collide on a null key.
+ * Note: MongoDB de-duplicates keys within a single array, so duplicates
+ * inside one document are handled by the service layer.
+ */
+collegeSchema.index(
+  { domains: 1 },
+  {
+    unique: true,
+    name: 'domains_unique',
+    partialFilterExpression: { 'domains.0': { $type: 'string' } },
+  }
 );
 
 export const College = mongoose.model<ICollege>('College', collegeSchema);

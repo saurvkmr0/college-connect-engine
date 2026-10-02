@@ -4,6 +4,15 @@ import { User } from '../models/User';
 import { Post } from '../models/Post';
 import { AuthRequest } from '../middleware/auth';
 import { CollegeVerificationStatus } from '../types';
+import {
+  addDomains,
+  createCollege,
+  removeDomain,
+  replaceDomains,
+  setCollegeActive,
+  updateCollege,
+} from '../services/college.service';
+import { handleControllerError, sendSuccess } from '../utils/apiError';
 
 export const createCollegeRequest = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -166,5 +175,94 @@ export const followCollege = async (req: AuthRequest, res: Response): Promise<vo
   } catch (error) {
     console.error('Follow college error:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* College management - admin only                                     */
+/* Domains drive college email verification, so they are admin managed */
+/* ------------------------------------------------------------------ */
+
+export const createCollegeAdmin = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await createCollege(req.body || {}, req.user!.userId);
+    sendSuccess(res, 201, 'College created', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Create college');
+  }
+};
+
+export const updateCollegeAdmin = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await updateCollege(req.params.collegeId, req.body || {});
+    sendSuccess(res, 200, 'College updated', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Update college');
+  }
+};
+
+export const enableCollege = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await setCollegeActive(req.params.collegeId, true);
+    sendSuccess(res, 200, 'College enabled', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Enable college');
+  }
+};
+
+export const disableCollege = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await setCollegeActive(req.params.collegeId, false);
+    sendSuccess(res, 200, 'College disabled', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Disable college');
+  }
+};
+
+/** PUT - replaces the whole domain list. */
+export const updateCollegeDomains = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await replaceDomains(req.params.collegeId, req.body?.domains);
+    sendSuccess(res, 200, 'Domains updated', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Update domains');
+  }
+};
+
+/** POST - adds domains to the existing list. */
+export const addCollegeDomains = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await addDomains(req.params.collegeId, req.body?.domains);
+    sendSuccess(res, 200, 'Domains added', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Add domains');
+  }
+};
+
+/** DELETE - removes a single domain. */
+export const removeCollegeDomain = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const college = await removeDomain(req.params.collegeId, req.params.domain);
+    sendSuccess(res, 200, 'Domain removed', { college });
+  } catch (error) {
+    handleControllerError(res, error, 'Remove domain');
+  }
+};
+
+export const listCollegesAdmin = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { active, query } = req.query;
+    const filter: Record<string, unknown> = {};
+
+    if (active === 'true') filter.active = true;
+    if (active === 'false') filter.active = false;
+    if (typeof query === 'string' && query.trim()) {
+      filter.name = { $regex: query.trim(), $options: 'i' };
+    }
+
+    const colleges = await College.find(filter).sort({ name: 1 });
+    res.json({ success: true, colleges });
+  } catch (error) {
+    handleControllerError(res, error, 'List colleges');
   }
 };

@@ -18,6 +18,16 @@ export enum CollegeVerificationStatus {
   REJECTED = 'rejected',
 }
 
+export type CollegeVerificationMethod = 'email';
+
+export interface ICollegeVerification {
+  verified: boolean;
+  collegeId?: Types.ObjectId;
+  collegeEmail?: string;
+  method?: CollegeVerificationMethod;
+  verifiedAt?: Date;
+}
+
 export interface IUser extends Document {
   _id: Types.ObjectId;
   name: string;
@@ -27,6 +37,7 @@ export interface IUser extends Document {
   college?: Types.ObjectId;
   collegeEmail?: string;
   collegeEmailVerified: boolean;
+  collegeVerification: ICollegeVerification;
   avatar?: string;
   bio?: string;
   department?: string;
@@ -46,6 +57,13 @@ export interface ICollege extends Document {
   description?: string;
   admin: Types.ObjectId;
   verificationStatus: CollegeVerificationStatus;
+  /** Email domains that map to this college, stored lowercase and without `@`. */
+  domains: string[];
+  country?: string;
+  state?: string;
+  city?: string;
+  /** Only `active` colleges can be used for email verification. */
+  active: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

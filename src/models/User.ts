@@ -14,6 +14,15 @@ const userSchema = new Schema<IUser>(
     college: { type: Schema.Types.ObjectId, ref: 'College' },
     collegeEmail: { type: String, lowercase: true, trim: true },
     collegeEmailVerified: { type: Boolean, default: false },
+    // College email verification (OTP flow). Populated only after the OTP
+    // has been verified - never set from client-supplied data.
+    collegeVerification: {
+      verified: { type: Boolean, default: false },
+      collegeId: { type: Schema.Types.ObjectId, ref: 'College' },
+      collegeEmail: { type: String, lowercase: true, trim: true },
+      method: { type: String, enum: ['email'] },
+      verifiedAt: { type: Date },
+    },
     avatar: { type: String },
     bio: { type: String, maxlength: 500 },
     department: { type: String },
