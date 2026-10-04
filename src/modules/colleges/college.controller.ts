@@ -1,12 +1,15 @@
-import { CollegeVerificationStatus, PostType, UserRole } from '../../types';
+import { Types } from 'mongoose';
+import { CollegeVerificationStatus, PostType } from '../../types';
 import { ApiError, asyncHandler, sendSuccess } from '../../utils/apiError';
-import { escapeRegex, str } from '../../utils/request';
+import { escapeRegex, parsePagination, str } from '../../utils/request';
 import { Post } from '../posts/post.model';
-import { AUTHOR_FIELDS, User } from '../users/user.model';
-import { College } from './college.model';
+import { feedPipeline, NEWEST_FIRST } from '../posts/post.service';
+import { User } from '../users/user.model';
+import { College, PUBLIC_COLLEGE } from './college.model';
 import {
   addDomains,
   createCollege,
+  getCollegeStats,
   parseCollegeInput,
   removeDomain,
   replaceDomains,
@@ -27,23 +30,72 @@ export const getColleges = asyncHandler(async (_req, res) => {
   res.json({ colleges });
 });
 
-export const getCollegeById = asyncHandler(async (req, res) => {
-  const { collegeId } = req.params;
+const assertPublicCollege = async (collegeId: string): Promise<void> => {
+  if (!(await College.exists({ _id: collegeId, ...PUBLIC_COLLEGE }))) {
+    throw new ApiError(404, 'NOT_FOUND', 'College not found');
+  }
+};
 
-  // Independent queries - run them in parallel.
-  const [college, posts, studentCount, facultyCount] = await Promise.all([
-    College.findById(collegeId).populate('admin', 'name avatar').lean(),
-    Post.find({ college: collegeId, type: PostType.GLOBAL })
-      .populate('author', AUTHOR_FIELDS)
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .lean(),
-    User.countDocuments({ college: collegeId, role: UserRole.STUDENT }),
-    User.countDocuments({ college: collegeId, role: { $in: [UserRole.FACULTY, UserRole.STAFF] } }),
-  ]);
+export const searchColleges = asyncHandler(async (req, res) => {
+  const query = str(req.query.q).slice(0, 50);
+  if (!query) {
+    res.json({ colleges: [] });
+    return;
+  }
+  // ponytail: unanchored regex scans colleges - fine for thousands; add a text index beyond that.
+  const colleges = await College.find({ ...PUBLIC_COLLEGE, name: { $regex: escapeRegex(query), $options: 'i' } })
+    .select('name code logo city state')
+    .sort({ name: 1 })
+    .limit(20)
+    .lean();
+  res.json({ colleges });
+});
+
+export const getCollegeById = asyncHandler(async (req, res) => {
+  const college = await College.findOne({ _id: req.params.collegeId, ...PUBLIC_COLLEGE })
+    .select('-admin -__v')
+    .lean();
   if (!college) throw new ApiError(404, 'NOT_FOUND', 'College not found');
 
-  res.json({ college, stats: { studentCount, facultyCount }, posts });
+  const [stats, isFollowing] = await Promise.all([
+    getCollegeStats(college._id),
+    User.exists({ _id: req.user!.userId, followedColleges: college._id }),
+  ]);
+  res.json({ college, stats, isFollowing: Boolean(isFollowing) });
+});
+
+/** Global posts by members of the college (students and staff), newest first. */
+export const getCollegePosts = asyncHandler(async (req, res) => {
+  const { collegeId } = req.params;
+  await assertPublicCollege(collegeId);
+
+  const { page, limit, skip } = parsePagination(req.query);
+  const posts = await Post.aggregate(
+    feedPipeline({ college: new Types.ObjectId(collegeId), type: PostType.GLOBAL }, NEWEST_FIRST, skip, limit)
+  );
+  res.json({ posts, page, limit });
+});
+
+/**
+ * Toggle. Any signed-in user may follow (no content is created). Atomic, like user follows.
+ * Unfollowing always works - even after the college is disabled - only following needs a public college.
+ */
+export const followCollege = asyncHandler(async (req, res) => {
+  const { collegeId } = req.params;
+  if (!Types.ObjectId.isValid(collegeId)) throw new ApiError(404, 'NOT_FOUND', 'College not found');
+  const id = new Types.ObjectId(collegeId);
+
+  const removed = await User.updateOne(
+    { _id: req.user!.userId, followedColleges: id },
+    { $pull: { followedColleges: id } }
+  );
+  const isFollowing = removed.modifiedCount === 0;
+  if (isFollowing) {
+    await assertPublicCollege(collegeId);
+    await User.updateOne({ _id: req.user!.userId }, { $addToSet: { followedColleges: id } });
+  }
+
+  res.json({ isFollowing, followerCount: await User.countDocuments({ followedColleges: id }) });
 });
 
 /* ------------------------------------------------------------------ */
@@ -51,7 +103,8 @@ export const getCollegeById = asyncHandler(async (req, res) => {
 /* ------------------------------------------------------------------ */
 
 export const listCollegesAdmin = asyncHandler(async (req, res) => {
-  const filter: Record<string, unknown> = {};
+  // Pending portal applications are reviewed on the Applications page, not here.
+  const filter: Record<string, unknown> = { verificationStatus: { $ne: CollegeVerificationStatus.PENDING } };
   if (req.query.active === 'true') filter.active = true;
   if (req.query.active === 'false') filter.active = false;
 

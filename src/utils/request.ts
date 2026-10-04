@@ -16,3 +16,12 @@ export const parsePagination = (query: Request['query'], maxLimit = 50) => {
   const limit = Math.min(maxLimit, Math.max(1, Math.floor(Number(query.limit)) || 20));
   return { page, limit, skip: (page - 1) * limit };
 };
+
+/** Image fields accept https URLs only until uploads exist (blocks http:, javascript:, data:). */
+export const isHttpsUrl = (value: string): boolean => {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+};

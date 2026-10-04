@@ -4,14 +4,19 @@ import { normalizeDomain } from '../../utils/emailValidation';
 
 /** College snippet embedded in users, posts and feeds. */
 export const COLLEGE_SUMMARY_FIELDS = 'name code logo';
+/** Fields an approved rep may edit from the portal. Name, code and domains stay admin-only. */
+export const COLLEGE_PROFILE_FIELDS = ['description', 'logo', 'bannerImage', 'country', 'state', 'city', 'address'] as const;
+/** What the public may see (search, profile, posts, follow, followed-college feed): approved and not disabled. */
+export const PUBLIC_COLLEGE = { verificationStatus: CollegeVerificationStatus.APPROVED, active: true };
 
 const collegeSchema = new Schema<ICollege>(
   {
-    name: { type: String, required: true, trim: true },
+    name: { type: String, required: true, trim: true, maxlength: 200 },
     code: { type: String, required: true, unique: true, uppercase: true, trim: true },
-    address: { type: String },
-    logo: { type: String },
-    description: { type: String },
+    address: { type: String, trim: true, maxlength: 300 },
+    logo: { type: String, trim: true, maxlength: 500 },
+    description: { type: String, trim: true, maxlength: 2000 },
+    bannerImage: { type: String, trim: true, maxlength: 500 },
     admin: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     verificationStatus: {
       type: String,
@@ -30,9 +35,9 @@ const collegeSchema = new Schema<ICollege>(
         message: 'Domains must be non-empty strings',
       },
     },
-    country: { type: String, trim: true },
-    state: { type: String, trim: true },
-    city: { type: String, trim: true },
+    country: { type: String, trim: true, maxlength: 100 },
+    state: { type: String, trim: true, maxlength: 100 },
+    city: { type: String, trim: true, maxlength: 100 },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

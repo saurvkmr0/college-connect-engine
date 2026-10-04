@@ -1,4 +1,3 @@
-import { UserRole } from '../../types';
 import { ApiError, asyncHandler } from '../../utils/apiError';
 import { parsePagination, str } from '../../utils/request';
 import { COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
@@ -12,8 +11,6 @@ import {
   normalizeTags,
   togglePostReaction,
 } from './post.service';
-
-const UPVOTE_ROLES: string[] = [UserRole.FACULTY, UserRole.STAFF, UserRole.ADMIN];
 
 /** Requires `requireVerified`, so req.user.collegeId is always set here. */
 export const createPost = asyncHandler(async (req, res) => {
@@ -74,8 +71,8 @@ export const toggleLike = asyncHandler(async (req, res) => {
 });
 
 export const toggleUpvote = asyncHandler(async (req, res) => {
-  if (!UPVOTE_ROLES.includes(req.user!.role)) {
-    throw new ApiError(403, 'FORBIDDEN', 'Only faculty and staff can upvote posts');
+  if (!req.user!.canUpvote) {
+    throw new ApiError(403, 'FORBIDDEN', 'Only faculty and staff approved by their college can upvote posts');
   }
   const { active, count } = await togglePostReaction(req.params.postId, 'upvotes', req.user!);
   res.json({ message: active ? 'Upvoted' : 'Upvote removed', upvotesCount: count, isUpvoted: active });

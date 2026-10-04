@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { Types } from 'mongoose';
-import { ICollege, CollegeVerificationStatus } from '../../types';
+import { ICollege, CollegeVerificationStatus, PostType, UserRole } from '../../types';
 import { ApiError } from '../../utils/apiError';
 import {
   extractDomain,
@@ -9,6 +9,9 @@ import {
   normalizeDomain,
   normalizeEmail,
 } from '../../utils/emailValidation';
+import { isHttpsUrl } from '../../utils/request';
+import { Post } from '../posts/post.model';
+import { User } from '../users/user.model';
 import { College } from './college.model';
 
 /* ------------------------------------------------------------------ */
@@ -140,10 +143,24 @@ export interface CollegeInput {
   address?: string;
   description?: string;
   logo?: string;
+  bannerImage?: string;
   active?: boolean;
 }
 
-const TEXT_FIELDS = ['name', 'code', 'country', 'state', 'city', 'address', 'description', 'logo'] as const;
+/** Every writable text field and its max length - mirrors the schema so callers get a clean 400. */
+const TEXT_LIMITS = {
+  name: 200,
+  code: 20,
+  country: 100,
+  state: 100,
+  city: 100,
+  address: 300,
+  description: 2000,
+  logo: 500,
+  bannerImage: 500,
+} as const;
+const TEXT_FIELDS = Object.keys(TEXT_LIMITS) as (keyof typeof TEXT_LIMITS)[];
+const IMAGE_FIELDS = { logo: 'Profile image', bannerImage: 'Banner image' } as const;
 
 /**
  * Builds a CollegeInput from an untrusted request body: only known fields, only
@@ -154,10 +171,19 @@ export const parseCollegeInput = (body: unknown): CollegeInput => {
   const source = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   const input: CollegeInput = {};
   for (const field of TEXT_FIELDS) {
-    if (typeof source[field] === 'string') input[field] = source[field] as string;
+    if (typeof source[field] !== 'string') continue;
+    const value = source[field] as string;
+    if (value.trim().length > TEXT_LIMITS[field]) {
+      throw new ApiError(400, 'VALIDATION_ERROR', `${field} must be at most ${TEXT_LIMITS[field]} characters`);
+    }
+    input[field] = value;
   }
   if (typeof source.active === 'boolean') input.active = source.active;
   if (source.domains !== undefined) input.domains = source.domains as string[];
+  for (const [field, label] of Object.entries(IMAGE_FIELDS) as [keyof typeof IMAGE_FIELDS, string][]) {
+    const url = input[field]?.trim();
+    if (url && !isHttpsUrl(url)) throw new ApiError(400, 'VALIDATION_ERROR', `${label} must be an https:// image link`);
+  }
   return input;
 };
 
@@ -172,7 +198,8 @@ export const getCollegeOrThrow = async (collegeId: string): Promise<ICollege> =>
 
 export const createCollege = async (
   input: CollegeInput,
-  adminId: string
+  adminId: string,
+  status: CollegeVerificationStatus = CollegeVerificationStatus.APPROVED
 ): Promise<ICollege> => {
   const name = (input.name || '').trim();
   if (!name) {
@@ -204,9 +231,10 @@ export const createCollege = async (
       address: input.address?.trim(),
       description: input.description?.trim(),
       logo: input.logo?.trim(),
+      bannerImage: input.bannerImage?.trim(),
       active: input.active ?? true,
-      // Created by an admin, so it is considered approved.
-      verificationStatus: CollegeVerificationStatus.APPROVED,
+      // Admin-created colleges are approved; portal applications start pending.
+      verificationStatus: status,
     });
   } catch (error) {
     return rethrowDuplicateKey(error, 'A college with this domain or code already exists');
@@ -240,6 +268,7 @@ export const updateCollege = async (
   if (input.address !== undefined) college.address = input.address.trim();
   if (input.description !== undefined) college.description = input.description.trim();
   if (input.logo !== undefined) college.logo = input.logo.trim();
+  if (input.bannerImage !== undefined) college.bannerImage = input.bannerImage.trim();
   if (input.active !== undefined) college.active = Boolean(input.active);
   // Domains are managed through the dedicated domain endpoints only.
 
@@ -256,6 +285,10 @@ export const setCollegeActive = async (
   active: boolean
 ): Promise<ICollege> => {
   const college = await getCollegeOrThrow(collegeId);
+  // Enabling a pending application would let students verify against an unapproved college.
+  if (active && college.verificationStatus === CollegeVerificationStatus.PENDING) {
+    throw new ApiError(409, 'CONFLICT', 'Approve the college application before enabling it.');
+  }
   college.active = active;
   await college.save();
   return college;
@@ -301,4 +334,23 @@ export const removeDomain = async (collegeId: string, domain: string): Promise<I
   college.domains = college.domains.filter((existing) => existing !== normalized);
   await college.save();
   return college;
+};
+
+/* ------------------------------------------------------------------ */
+/* Stats (public profile + rep dashboard)                              */
+/* ------------------------------------------------------------------ */
+
+const STAFF_ROLES = [UserRole.FACULTY, UserRole.STAFF];
+
+/** Member, follower and post counts for one college. Independent counts run in parallel. */
+export const getCollegeStats = async (collegeId: Types.ObjectId | string) => {
+  const id = new Types.ObjectId(collegeId);
+  const [studentCount, facultyCount, pendingFacultyCount, followerCount, postCount] = await Promise.all([
+    User.countDocuments({ college: id, role: UserRole.STUDENT }),
+    User.countDocuments({ college: id, role: { $in: STAFF_ROLES }, facultyStatus: { $ne: 'pending' } }),
+    User.countDocuments({ college: id, role: { $in: STAFF_ROLES }, facultyStatus: 'pending' }),
+    User.countDocuments({ followedColleges: id }),
+    Post.countDocuments({ college: id, type: PostType.GLOBAL }),
+  ]);
+  return { studentCount, facultyCount, pendingFacultyCount, followerCount, postCount };
 };

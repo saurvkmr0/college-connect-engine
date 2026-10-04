@@ -2,49 +2,11 @@ import { FilterQuery, PipelineStage, Types } from 'mongoose';
 import { IPost, PostType } from '../../types';
 import { asyncHandler } from '../../utils/apiError';
 import { parsePagination, str } from '../../utils/request';
-import { College, COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
+import { College, COLLEGE_SUMMARY_FIELDS, PUBLIC_COLLEGE } from '../colleges/college.model';
 import { Post } from '../posts/post.model';
+import { feedPipeline } from '../posts/post.service';
 import { Tag } from '../posts/tag.model';
 import { AUTHOR_FIELDS, User } from '../users/user.model';
-
-/** `'name avatar role'` -> `{ name: 1, avatar: 1, role: 1 }` for $lookup projections. */
-const toProjection = (fields: string) => Object.fromEntries(fields.split(' ').map((f) => [f, 1]));
-
-/**
- * Shared feed pipeline: match -> rank -> paginate -> join author/college.
- * The joins only return public fields, so emails and verification data never leak.
- */
-const feedPipeline = (
-  match: FilterQuery<IPost>,
-  rank: PipelineStage[],
-  skip: number,
-  limit: number
-): PipelineStage[] => [
-  { $match: match },
-  ...rank,
-  { $skip: skip },
-  { $limit: limit },
-  {
-    $lookup: {
-      from: User.collection.name,
-      localField: 'author',
-      foreignField: '_id',
-      pipeline: [{ $project: toProjection(AUTHOR_FIELDS) }],
-      as: 'author',
-    },
-  },
-  { $unwind: '$author' },
-  {
-    $lookup: {
-      from: College.collection.name,
-      localField: 'college',
-      foreignField: '_id',
-      pipeline: [{ $project: toProjection(COLLEGE_SUMMARY_FIELDS) }],
-      as: 'college',
-    },
-  },
-  { $unwind: '$college' },
-];
 
 // ponytail: score is computed per request over every matching post, so this sort
 // cannot use an index. Store likeCount/upvoteCount/commentCount on the post (or a
@@ -72,7 +34,7 @@ const BY_UPVOTES: PipelineStage[] = [
 /**
  * Global feed, ranked by engagement:
  * - `?tag=` - every global post with that tag
- * - verified users - posts from people they follow + their own college
+ * - verified users - people they follow, their own college, colleges they follow
  * - unverified users - every global post (read-only until they verify)
  */
 export const getGlobalFeed = asyncHandler(async (req, res) => {
@@ -84,10 +46,15 @@ export const getGlobalFeed = asyncHandler(async (req, res) => {
   if (tag) {
     match.tags = tag;
   } else if (collegeId) {
-    const me = await User.findById(userId).select('following').lean();
+    const me = await User.findById(userId).select('following followedColleges').lean();
+    // Followed colleges that were disabled since stop appearing.
+    const followedColleges = me?.followedColleges?.length
+      ? await College.find({ _id: { $in: me.followedColleges }, ...PUBLIC_COLLEGE }).distinct('_id')
+      : [];
     match.$or = [
       { author: { $in: me?.following ?? [] } },
       { college: new Types.ObjectId(collegeId) },
+      { college: { $in: followedColleges } },
     ];
   }
 

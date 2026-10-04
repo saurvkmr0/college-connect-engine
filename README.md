@@ -30,7 +30,7 @@ src/
     <feature>.model.ts       Mongoose schema, indexes, field constants
 ```
 
-Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`.
+Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`, `portal` (college reps), `applications` (admin review of reps).
 
 ### Adding a feature
 
@@ -66,10 +66,13 @@ Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`.
 | Signed out | sign up / log in |
 | Signed in, **not** college-verified | read the global feed (all global posts), view profiles/colleges |
 | College-verified | post, like, comment, follow, read their college feed |
-| Faculty / staff / admin (verified) | + upvote |
+| Faculty/staff pending college approval | verified-member powers, no upvote |
+| Faculty / staff (approved by their college) / admin | + upvote |
+| College rep (portal) | verify email, apply, then (approved) edit profile + approve faculty |
 | Admin (env login) | admin panel: colleges + domains |
 
 College-type posts are visible only to members of that college (others get 404).
+Colleges are public (search, profile, posts, follow) only when approved **and** active.
 
 ## Redis
 
@@ -106,7 +109,23 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 
 ### Colleges
 - `GET /api/colleges` - List approved colleges
-- `GET /api/colleges/:collegeId` - College details, member counts, recent global posts
+- `GET /api/colleges/search?q=` - Search approved, active colleges by name (max 20)
+- `GET /api/colleges/:collegeId` - `{ college, stats, isFollowing }`
+- `GET /api/colleges/:collegeId/posts?page=&limit=` - Members' global posts, newest first
+- `POST /api/colleges/:collegeId/follow` - Follow/unfollow (any signed-in user) -> `{ isFollowing, followerCount }`
+
+### College portal (reps, `/api/college-portal`)
+- `POST /register`, `POST /login` - Rep accounts (official college email; free providers refused)
+- `POST /request-otp`, `POST /verify-otp` - Prove the email domain
+- `POST /application` - Apply: claim of the college owning the domain, or a new (pending) college
+- `GET /me` - Status, managed college, stats (when approved)
+- `PATCH /college` - Edit profile fields (description, images, location); name/code/domains are admin-only
+- `GET /faculty-requests`, `POST /faculty-requests/:userId/approve|reject` - Approve faculty/staff (reject makes them students)
+
+### Admin - college applications (`/api/admin/college-applications`)
+- `GET /` - Pending applications (`type: new | claim`)
+- `POST /:repId/approve` - New: college goes live. Claim: rep linked to the college
+- `POST /:repId/reject` - `{ reason }` required. New: pending college deleted
 
 ### Colleges - admin only
 - `POST /api/colleges` - Create college

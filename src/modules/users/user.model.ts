@@ -1,5 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
-import { IUser, UserRole } from '../../types';
+import { FacultyStatus, IUser, UserRole } from '../../types';
 
 /** Fields any signed-in user may see about another user. Never includes emails. */
 export const PUBLIC_USER_FIELDS = 'name avatar role college bio department graduationYear createdAt';
@@ -37,12 +37,24 @@ const userSchema = new Schema<IUser>(
     // once users can have tens of thousands of followers (16MB document limit).
     followers: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     following: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    followedColleges: [{ type: Schema.Types.ObjectId, ref: 'College' }],
+    // --- College reps (role college_rep) ---
+    emailVerified: { type: Boolean },
+    managedCollege: { type: Schema.Types.ObjectId, ref: 'College' },
+    managerStatus: { type: String, enum: ['pending', 'approved', 'rejected'] },
+    managerRejectionReason: { type: String, trim: true, maxlength: 500 },
+    // --- Faculty/staff approval by their college (missing = approved) ---
+    facultyStatus: { type: String, enum: ['pending', 'approved'] },
   },
   { timestamps: true }
 );
 
 // College member counts (students vs faculty/staff).
 userSchema.index({ college: 1, role: 1 });
+// College follower counts / "is following" checks.
+userSchema.index({ followedColleges: 1 });
+// "Does this college already have a rep?" and the admin applications list.
+userSchema.index({ managedCollege: 1, managerStatus: 1 });
 
 export const User = mongoose.model<IUser>('User', userSchema);
 
@@ -50,3 +62,9 @@ export const User = mongoose.model<IUser>('User', userSchema);
 export const isUserVerified = (
   user: Pick<IUser, 'collegeEmailVerified'> & { collegeVerification?: { verified?: boolean } }
 ): boolean => Boolean(user.collegeVerification?.verified || user.collegeEmailVerified);
+
+const UPVOTE_ROLES: string[] = [UserRole.FACULTY, UserRole.STAFF, UserRole.ADMIN];
+
+/** Faculty/staff/admin may upvote unless their college has not approved them yet. */
+export const canUserUpvote = (user: { role: UserRole; facultyStatus?: FacultyStatus }): boolean =>
+  UPVOTE_ROLES.includes(user.role) && user.facultyStatus !== 'pending';

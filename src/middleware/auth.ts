@@ -1,5 +1,5 @@
 import { RequestHandler } from 'express';
-import { User, isUserVerified } from '../modules/users/user.model';
+import { User, canUserUpvote, isUserVerified } from '../modules/users/user.model';
 import { UserRole } from '../types';
 import { ApiError, asyncHandler } from '../utils/apiError';
 import { JwtPayload, verifyToken } from '../utils/jwt';
@@ -21,16 +21,21 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
   }
 
   const user = await User.findById(payload.userId)
-    .select('email role college collegeEmailVerified collegeVerification.verified')
+    .select('email role college collegeEmailVerified collegeVerification.verified facultyStatus emailVerified managedCollege managerStatus')
     .lean();
   if (!user) throw new ApiError(401, 'UNAUTHORIZED', 'User not found');
 
+  const verified = Boolean(user.college) && isUserVerified(user);
   req.user = {
     userId: user._id.toString(),
     email: user.email,
     role: user.role,
     collegeId: user.college?.toString(),
-    verified: Boolean(user.college) && isUserVerified(user),
+    verified,
+    canUpvote: verified && canUserUpvote(user),
+    emailVerified: Boolean(user.emailVerified),
+    managedCollegeId: user.managedCollege?.toString(),
+    managerStatus: user.managerStatus,
   };
   next();
 });

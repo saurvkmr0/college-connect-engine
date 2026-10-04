@@ -1,6 +1,8 @@
-import { Types } from 'mongoose';
-import { AuthUser, PostType } from '../../types';
+import { FilterQuery, PipelineStage, Types } from 'mongoose';
+import { AuthUser, IPost, PostType } from '../../types';
 import { ApiError } from '../../utils/apiError';
+import { College, COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
+import { AUTHOR_FIELDS, User } from '../users/user.model';
 import { MAX_IMAGES, MAX_TAGS, Post } from './post.model';
 import { Tag } from './tag.model';
 
@@ -64,3 +66,45 @@ export const togglePostReaction = async (
 
   return { active: Boolean(added), count: post?.[field].length ?? 0 };
 };
+
+/** `'name avatar role'` -> `{ name: 1, avatar: 1, role: 1 }` for $lookup projections. */
+const toProjection = (fields: string) => Object.fromEntries(fields.split(' ').map((f) => [f, 1]));
+
+/**
+ * Shared post-list pipeline (feeds + college profile): match -> rank -> paginate -> join author/college.
+ * The joins only return public fields, so emails and verification data never leak.
+ */
+export const feedPipeline = (
+  match: FilterQuery<IPost>,
+  rank: PipelineStage[],
+  skip: number,
+  limit: number
+): PipelineStage[] => [
+  { $match: match },
+  ...rank,
+  { $skip: skip },
+  { $limit: limit },
+  {
+    $lookup: {
+      from: User.collection.name,
+      localField: 'author',
+      foreignField: '_id',
+      pipeline: [{ $project: toProjection(AUTHOR_FIELDS) }],
+      as: 'author',
+    },
+  },
+  { $unwind: '$author' },
+  {
+    $lookup: {
+      from: College.collection.name,
+      localField: 'college',
+      foreignField: '_id',
+      pipeline: [{ $project: toProjection(COLLEGE_SUMMARY_FIELDS) }],
+      as: 'college',
+    },
+  },
+  { $unwind: '$college' },
+];
+
+/** Rank for lists that are purely chronological (college profile). */
+export const NEWEST_FIRST: PipelineStage[] = [{ $sort: { createdAt: -1 } }];

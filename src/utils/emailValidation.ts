@@ -37,3 +37,14 @@ export const extractDomain = (email: string): string => {
   if (at === -1) return '';
   return normalizeDomain(email.slice(at + 1));
 };
+
+/**
+ * Public mailbox providers. A college rep must use their institution's own domain:
+ * approving a college that owns `gmail.com` would let anyone verify as its student.
+ */
+const FREE_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com',
+  'me.com', 'proton.me', 'protonmail.com', 'aol.com', 'zoho.com', 'gmx.com', 'yandex.com', 'mail.com',
+]);
+
+export const isFreeEmailDomain = (domain: string): boolean => FREE_EMAIL_DOMAINS.has(normalizeDomain(domain));

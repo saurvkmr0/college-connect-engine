@@ -5,6 +5,8 @@ export enum UserRole {
   FACULTY = 'faculty',
   STAFF = 'staff',
   ADMIN = 'admin',
+  /** College representative - uses the college portal only, never the student app. */
+  COLLEGE_REP = 'college_rep',
 }
 
 export enum PostType {
@@ -19,6 +21,11 @@ export enum CollegeVerificationStatus {
 }
 
 export type CollegeVerificationMethod = 'email';
+
+/** A rep's application state for the college they manage. */
+export type ManagerStatus = 'pending' | 'approved' | 'rejected';
+/** Faculty/staff approval by their college. Missing = approved (accounts that predate approval). */
+export type FacultyStatus = 'pending' | 'approved';
 
 export interface ICollegeVerification {
   verified: boolean;
@@ -45,6 +52,13 @@ export interface IUser extends Document {
   graduationYear?: number;
   followers: Types.ObjectId[];
   following: Types.ObjectId[];
+  followedColleges: Types.ObjectId[];
+  /** Reps: login email proven by OTP. */
+  emailVerified?: boolean;
+  managedCollege?: Types.ObjectId;
+  managerStatus?: ManagerStatus;
+  managerRejectionReason?: string;
+  facultyStatus?: FacultyStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,6 +70,7 @@ export interface ICollege extends Document {
   address?: string;
   logo?: string;
   description?: string;
+  bannerImage?: string;
   admin: Types.ObjectId;
   verificationStatus: CollegeVerificationStatus;
   /** Email domains that map to this college, stored lowercase and without `@`. */
@@ -109,6 +124,13 @@ export interface AuthUser {
   collegeId?: string;
   /** Has a college and a verified college email - required to post or interact. */
   verified: boolean;
+  /** Verified faculty/staff/admin whose college approved them (not pending). */
+  canUpvote: boolean;
+  /** Reps: login email verified by OTP. */
+  emailVerified: boolean;
+  /** Reps: the college they applied for / manage. */
+  managedCollegeId?: string;
+  managerStatus?: ManagerStatus;
 }
 
 declare global {

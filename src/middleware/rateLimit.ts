@@ -39,3 +39,16 @@ export const rateLimit = ({
     }
     next();
   });
+
+const FIFTEEN_MINUTES = 15 * 60;
+
+/** Login (student + portal). Keyed by IP + email so one campus NAT does not lock out every student. */
+export const loginLimit = rateLimit({
+  name: 'login',
+  limit: 10,
+  windowSeconds: FIFTEEN_MINUTES,
+  keyBy: (req) => `${req.ip}:${String(req.body?.email ?? '').trim().toLowerCase()}`,
+});
+
+/** Account creation (student signup + portal register). */
+export const signupLimit = rateLimit({ name: 'signup', limit: 20, windowSeconds: 60 * 60 });
