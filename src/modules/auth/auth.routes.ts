@@ -1,7 +1,17 @@
 import { Router } from 'express';
-import { authenticate } from '../../middleware/auth';
-import { loginLimit, rateLimit, signupLimit } from '../../middleware/rateLimit';
-import { adminLogin, getMe, login, signup, updateProfile } from './auth.controller';
+import { authenticate, authenticateUnverified } from '../../middleware/auth';
+import { loginLimit, rateLimit, resetLimit, signupLimit } from '../../middleware/rateLimit';
+import {
+  adminLogin,
+  confirmAccount,
+  forgotPassword,
+  getMe,
+  login,
+  requestAccountCode,
+  resetPassword,
+  signup,
+  updateProfile,
+} from './auth.controller';
 
 const router = Router();
 
@@ -11,7 +21,11 @@ const adminLoginLimit = rateLimit({ name: 'admin-login', limit: 5, windowSeconds
 router.post('/admin-login', adminLoginLimit, adminLogin);
 router.post('/signup', signupLimit, signup);
 router.post('/login', loginLimit, login);
-router.get('/me', authenticate, getMe);
+router.post('/forgot-password', resetLimit, forgotPassword);
+router.post('/reset-password', resetLimit, resetPassword);
+router.get('/me', authenticateUnverified, getMe);
+router.post('/verify-account/request', authenticateUnverified, requestAccountCode);
+router.post('/verify-account/confirm', authenticateUnverified, confirmAccount);
 router.patch('/profile', authenticate, updateProfile);
 
 export default router;

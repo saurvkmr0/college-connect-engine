@@ -47,6 +47,7 @@ export interface IUser extends Document {
   collegeEmailVerified: boolean;
   collegeVerification: ICollegeVerification;
   avatar?: string;
+  banner?: string;
   bio?: string;
   department?: string;
   graduationYear?: number;
@@ -59,6 +60,14 @@ export interface IUser extends Document {
   managerStatus?: ManagerStatus;
   managerRejectionReason?: string;
   facultyStatus?: FacultyStatus;
+  /** Students: signup email proven by OTP. Missing = verified (accounts that predate it). */
+  accountVerified?: boolean;
+  /** Bumped by password reset; tokens carrying an older version are rejected. Missing = 0. */
+  tokenVersion?: number;
+  /** Students: set by college verification. */
+  stream?: string;
+  batchStart?: number;
+  batchEnd?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -131,6 +140,8 @@ export interface AuthUser {
   /** Reps: the college they applied for / manage. */
   managedCollegeId?: string;
   managerStatus?: ManagerStatus;
+  /** False only for new students who have not confirmed their signup email yet. */
+  accountVerified: boolean;
 }
 
 declare global {

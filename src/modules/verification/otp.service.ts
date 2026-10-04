@@ -1,11 +1,18 @@
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { config } from '../../config';
 import { incrementWindow, redisClient, redisCommand } from '../../config/redis';
+import { sendEmail } from '../../services/email/emailProvider';
+import { buildOtpEmail } from '../../services/email/templates';
+import { ApiError } from '../../utils/apiError';
 
 /**
- * All OTP/rate-limit constants are fixed by product requirements and are
- * deliberately NOT configurable through the environment.
+ * One OTP engine for every "prove you own this email" flow. Each purpose has its own Redis
+ * keys, so a password-reset code can never verify an account or a college email.
+ *
+ * All limits are fixed by product requirements and deliberately NOT configurable via env.
  */
+export type OtpPurpose = 'account' | 'reset' | 'college' | 'portal';
+
 export const OTP_LENGTH = 6;
 export const OTP_TTL_SECONDS = 300; // 5 minutes
 export const RESEND_COOLDOWN_SECONDS = 60; // 1 request / minute
@@ -13,24 +20,30 @@ export const HOURLY_REQUEST_LIMIT = 5; // 5 requests / hour
 export const HOURLY_WINDOW_SECONDS = 3600;
 export const MAX_VERIFY_ATTEMPTS = 5; // 5 wrong codes per OTP
 
+/** Email subject per purpose - the body is the same template for all of them. */
+const SUBJECTS: Record<OtpPurpose, string> = {
+  account: 'Verify your College Connect account',
+  reset: 'Your College Connect password reset code',
+  college: 'Your College Connect verification code',
+  portal: 'Your College Connect portal verification code',
+};
+
 /** Redis keys - see README for the full list. */
-export const otpKey = (userId: string) => `college-verification:otp:${userId}`;
-export const resendKey = (userId: string) => `college-verification:resend:${userId}`;
-export const hourlyKey = (userId: string) => `college-verification:hourly:${userId}`;
+const keys = (purpose: OtpPurpose, userId: string) => ({
+  otp: `otp:${purpose}:code:${userId}`,
+  resend: `otp:${purpose}:resend:${userId}`,
+  hourly: `otp:${purpose}:hourly:${userId}`,
+});
 
 export interface OtpRecord {
   /** Normalized email the code was sent to. */
   email: string;
-  /** College resolved from the email domain - never taken from the client. */
-  collegeId: string;
   /** HMAC of the OTP; the plaintext code is never stored. */
   otpHash: string;
   attempts: number;
+  /** Server-decided data to apply once the code is confirmed (e.g. the chosen college). */
+  context?: Record<string, unknown>;
 }
-
-/* ------------------------------------------------------------------ */
-/* OTP generation + hashing                                            */
-/* ------------------------------------------------------------------ */
 
 /** Cryptographically secure 6-digit code. `Math.random()` is never used. */
 export const generateOtp = (): string =>
@@ -50,66 +63,101 @@ export const verifyOtpHash = (otp: string, storedHash: string): boolean => {
   return timingSafeEqual(candidate, expected);
 };
 
-/* ------------------------------------------------------------------ */
-/* OTP record storage                                                  */
-/* ------------------------------------------------------------------ */
-
-/** Writes the record with a 5 minute TTL. Overwriting invalidates any previous OTP. */
-export const saveOtpRecord = async (userId: string, record: OtpRecord): Promise<void> => {
-  await redisCommand(() =>
-    redisClient.set(otpKey(userId), JSON.stringify(record), { EX: OTP_TTL_SECONDS })
-  );
-};
-
-export const getOtpRecord = async (userId: string): Promise<OtpRecord | null> => {
-  const raw = await redisCommand(() => redisClient.get(otpKey(userId)));
+const readRecord = async (purpose: OtpPurpose, userId: string): Promise<OtpRecord | null> => {
+  const key = keys(purpose, userId).otp;
+  const raw = await redisCommand(() => redisClient.get(key));
   if (!raw) return null;
-
   try {
     const parsed = JSON.parse(raw) as OtpRecord;
-    if (!parsed || typeof parsed.otpHash !== 'string' || typeof parsed.email !== 'string') {
-      return null;
-    }
-    return parsed;
+    return parsed && typeof parsed.otpHash === 'string' && typeof parsed.email === 'string' ? parsed : null;
   } catch {
     // Corrupt record: treat it as absent so the user can request a new code.
-    await deleteOtpRecord(userId);
+    await redisCommand(() => redisClient.del(key));
     return null;
   }
 };
 
-/** Persists attempt counters WITHOUT extending the original 5 minute TTL. */
-export const saveOtpRecordKeepingTtl = async (userId: string, record: OtpRecord): Promise<void> => {
-  await redisCommand(() =>
-    redisClient.set(otpKey(userId), JSON.stringify(record), { KEEPTTL: true })
-  );
+const deleteRecord = async (purpose: OtpPurpose, userId: string): Promise<void> => {
+  await redisCommand(() => redisClient.del(keys(purpose, userId).otp));
 };
 
-export const deleteOtpRecord = async (userId: string): Promise<void> => {
-  await redisCommand(() => redisClient.del(otpKey(userId)));
+/**
+ * Rate-limits, stores a hashed OTP (5 min TTL) and emails the code. A new code replaces
+ * the previous one for that purpose. Never returns the OTP.
+ */
+export const issueOtp = async (
+  purpose: OtpPurpose,
+  userId: string,
+  email: string,
+  options: { collegeName?: string; context?: Record<string, unknown> } = {}
+): Promise<void> => {
+  const k = keys(purpose, userId);
+
+  const cooldown = await redisCommand(() => redisClient.ttl(k.resend));
+  if (cooldown > 0) {
+    throw new ApiError(429, 'OTP_REQUEST_TOO_FREQUENT', 'Please wait a minute before requesting another code.');
+  }
+  if ((await incrementWindow(k.hourly, HOURLY_WINDOW_SECONDS)) > HOURLY_REQUEST_LIMIT) {
+    throw new ApiError(429, 'OTP_HOURLY_LIMIT_EXCEEDED', 'Too many verification requests. Please try again later.');
+  }
+
+  const code = generateOtp();
+  const record: OtpRecord = { email, otpHash: hashOtp(code), attempts: 0, context: options.context };
+  await redisCommand(() => redisClient.set(k.otp, JSON.stringify(record), { EX: OTP_TTL_SECONDS }));
+  await redisCommand(() => redisClient.set(k.resend, '1', { EX: RESEND_COOLDOWN_SECONDS }));
+
+  try {
+    const { text, html } = buildOtpEmail({
+      code,
+      collegeName: options.collegeName,
+      expiresInMinutes: Math.round(OTP_TTL_SECONDS / 60),
+    });
+    await sendEmail({ to: email, subject: SUBJECTS[purpose], text, html });
+  } catch {
+    // The code never reached the user - invalidate it and lift the cooldown so "Resend" works now.
+    await redisCommand(() => redisClient.del([k.otp, k.resend]));
+    throw new ApiError(502, 'EMAIL_SEND_FAILED', 'We could not send the verification email. Please try again.');
+  }
 };
 
-/* ------------------------------------------------------------------ */
-/* Rate limiting                                                       */
-/* ------------------------------------------------------------------ */
+/**
+ * Checks a submitted code. Wrong codes count towards MAX_VERIFY_ATTEMPTS without extending
+ * the TTL (KEEPTTL). On success the code is consumed, the rate limits reset and the record
+ * (with its context) is returned.
+ */
+export const consumeOtp = async (
+  purpose: OtpPurpose,
+  userId: string,
+  email: string,
+  rawOtp: unknown
+): Promise<OtpRecord> => {
+  const record = await readRecord(purpose, userId);
+  if (!record) {
+    // Missing and expired records share a code: Redis drops expired keys.
+    throw new ApiError(400, 'OTP_EXPIRED', 'The verification code has expired. Please request a new code.');
+  }
+  // The code must be used with the email it was issued for.
+  if (record.email !== email) {
+    throw new ApiError(400, 'EMAIL_MISMATCH', 'The email does not match the pending verification request.');
+  }
+  if (record.attempts >= MAX_VERIFY_ATTEMPTS) {
+    await deleteRecord(purpose, userId);
+    throw new ApiError(429, 'MAX_ATTEMPTS_EXCEEDED', 'Too many incorrect attempts. Please request a new code.');
+  }
 
-/** Seconds left before another OTP can be requested (0 when allowed). */
-export const getResendCooldown = async (userId: string): Promise<number> => {
-  const ttl = await redisCommand(() => redisClient.ttl(resendKey(userId)));
-  return ttl > 0 ? ttl : 0;
-};
+  const submitted = typeof rawOtp === 'string' || typeof rawOtp === 'number' ? String(rawOtp).trim() : '';
+  if (!submitted || !verifyOtpHash(submitted, record.otpHash)) {
+    const attempts = record.attempts + 1;
+    if (attempts >= MAX_VERIFY_ATTEMPTS) {
+      await deleteRecord(purpose, userId);
+      throw new ApiError(429, 'MAX_ATTEMPTS_EXCEEDED', 'Too many incorrect attempts. Please request a new code.');
+    }
+    const key = keys(purpose, userId).otp;
+    await redisCommand(() => redisClient.set(key, JSON.stringify({ ...record, attempts }), { KEEPTTL: true }));
+    throw new ApiError(400, 'INVALID_OTP', 'Invalid verification code.');
+  }
 
-export const startResendCooldown = async (userId: string): Promise<void> => {
-  await redisCommand(() =>
-    redisClient.set(resendKey(userId), '1', { EX: RESEND_COOLDOWN_SECONDS })
-  );
-};
-
-/** Increments the hourly counter and returns the new value. */
-export const incrementHourlyRequests = (userId: string): Promise<number> =>
-  incrementWindow(hourlyKey(userId), HOURLY_WINDOW_SECONDS);
-
-/** Clears rate-limit state - used after a successful verification. */
-export const clearVerificationRateLimits = async (userId: string): Promise<void> => {
-  await redisCommand(() => redisClient.del([resendKey(userId), hourlyKey(userId)]));
+  const k = keys(purpose, userId);
+  await redisCommand(() => redisClient.del([k.otp, k.resend, k.hourly]));
+  return record;
 };

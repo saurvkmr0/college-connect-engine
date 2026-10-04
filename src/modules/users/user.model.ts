@@ -2,7 +2,10 @@ import mongoose, { Schema } from 'mongoose';
 import { FacultyStatus, IUser, UserRole } from '../../types';
 
 /** Fields any signed-in user may see about another user. Never includes emails. */
-export const PUBLIC_USER_FIELDS = 'name avatar role college bio department graduationYear createdAt';
+export const PUBLIC_USER_FIELDS =
+  'name avatar banner role college bio department graduationYear stream batchStart batchEnd createdAt';
+/** Students, faculty and staff: the people other users can find, and who use the member login. */
+export const MEMBER_ROLES = [UserRole.STUDENT, UserRole.FACULTY, UserRole.STAFF];
 /** The author snippet embedded in posts, comments and follower lists. */
 export const AUTHOR_FIELDS = 'name avatar role';
 
@@ -30,6 +33,7 @@ const userSchema = new Schema<IUser>(
       verifiedAt: { type: Date },
     },
     avatar: { type: String, trim: true, maxlength: 500 },
+    banner: { type: String, trim: true, maxlength: 500 },
     bio: { type: String, trim: true, maxlength: 500 },
     department: { type: String, trim: true, maxlength: 100 },
     graduationYear: { type: Number, min: 1950, max: 2100 },
@@ -45,6 +49,15 @@ const userSchema = new Schema<IUser>(
     managerRejectionReason: { type: String, trim: true, maxlength: 500 },
     // --- Faculty/staff approval by their college (missing = approved) ---
     facultyStatus: { type: String, enum: ['pending', 'approved'] },
+    // --- Account security ---
+    // Students: signup email confirmed by OTP. Missing = verified (accounts that predate this).
+    accountVerified: { type: Boolean },
+    // Bumped by a password reset so every older token stops working (exact, no clock edge cases).
+    tokenVersion: { type: Number, select: false },
+    // --- Student details from college verification ---
+    stream: { type: String, trim: true, maxlength: 100 },
+    batchStart: { type: Number, min: 1950, max: 2100 },
+    batchEnd: { type: Number, min: 1950, max: 2100 },
   },
   { timestamps: true }
 );

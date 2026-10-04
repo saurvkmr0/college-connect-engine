@@ -21,9 +21,11 @@ import {
 /* Public (any signed-in user)                                          */
 /* ------------------------------------------------------------------ */
 
+/** Colleges students can verify with (college picker): approved + active, with their email domains. */
 export const getColleges = asyncHandler(async (_req, res) => {
-  const colleges = await College.find({ verificationStatus: CollegeVerificationStatus.APPROVED })
-    .select('name code logo description')
+  // ponytail: whole list in one response - fine for hundreds of colleges; page it beyond that.
+  const colleges = await College.find(PUBLIC_COLLEGE)
+    .select('name code logo city state domains')
     .sort({ name: 1 })
     .lean();
 

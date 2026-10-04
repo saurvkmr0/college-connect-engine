@@ -3,8 +3,7 @@ import { ApiError, asyncHandler, sendSuccess } from '../../utils/apiError';
 import { extractDomain, isFreeEmailDomain } from '../../utils/emailValidation';
 import { findByCredentials, hashPassword, parseNewAccount, sessionPayload } from '../auth/auth.service';
 import { User } from '../users/user.model';
-import { clearVerificationRateLimits } from '../verification/otp.service';
-import { consumeOtp, issueOtp } from '../verification/verification.service';
+import { consumeOtp, issueOtp } from '../verification/otp.service';
 import { applyForCollege, loadDashboard, updateManagedCollege } from './portal.service';
 
 /* ------------------------------------------------------------------ */
@@ -41,15 +40,14 @@ export const login = asyncHandler(async (req, res) => {
 /** Sends a code to the rep's own login email - proves they control that college domain. */
 export const requestEmailOtp = asyncHandler(async (req, res) => {
   if (req.user!.emailVerified) throw new ApiError(409, 'ALREADY_VERIFIED', 'Your email is already verified.');
-  await issueOtp(req.user!.userId, req.user!.email, '');
+  await issueOtp('portal', req.user!.userId, req.user!.email);
   sendSuccess(res, 200, 'Verification code sent to your email.');
 });
 
 export const verifyEmailOtp = asyncHandler(async (req, res) => {
   if (req.user!.emailVerified) throw new ApiError(409, 'ALREADY_VERIFIED', 'Your email is already verified.');
-  await consumeOtp(req.user!.userId, req.user!.email, req.body?.otp);
+  await consumeOtp('portal', req.user!.userId, req.user!.email, req.body?.otp);
   await User.updateOne({ _id: req.user!.userId }, { $set: { emailVerified: true } });
-  await clearVerificationRateLimits(req.user!.userId);
   sendSuccess(res, 200, 'Email verified.');
 });
 

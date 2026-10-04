@@ -50,5 +50,29 @@ export const loginLimit = rateLimit({
   keyBy: (req) => `${req.ip}:${String(req.body?.email ?? '').trim().toLowerCase()}`,
 });
 
+/** Forgot/reset password. Per IP + email; the OTP engine adds its own per-account cooldown and caps. */
+export const resetLimit = rateLimit({
+  name: 'reset',
+  limit: 10,
+  windowSeconds: FIFTEEN_MINUTES,
+  keyBy: (req) => `${req.ip}:${String(req.body?.email ?? '').trim().toLowerCase()}`,
+});
+
 /** Account creation (student signup + portal register). */
 export const signupLimit = rateLimit({ name: 'signup', limit: 20, windowSeconds: 60 * 60 });
+
+/** Comments are open to unverified accounts, so cap them per user to keep spam out. */
+export const commentLimit = rateLimit({
+  name: 'comment',
+  limit: 30,
+  windowSeconds: 10 * 60,
+  keyBy: (req) => req.user?.userId ?? req.ip ?? 'unknown',
+});
+
+/** Likes and follows are open to unverified (cheap) accounts - cap them per user so scripts cannot game rankings. */
+export const reactionLimit = rateLimit({
+  name: 'reaction',
+  limit: 120,
+  windowSeconds: 10 * 60,
+  keyBy: (req) => req.user?.userId ?? req.ip ?? 'unknown',
+});

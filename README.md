@@ -63,9 +63,10 @@ Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`, `portal` 
 
 | Who | Can |
 | --- | --- |
-| Signed out | sign up / log in |
-| Signed in, **not** college-verified | read the global feed (all global posts), view profiles/colleges |
-| College-verified | post, like, comment, follow, read their college feed |
+| Signed out | sign up / log in / forgot password |
+| New student, email not yet confirmed | only `/auth/me` + verify-account (everything else `403 ACCOUNT_NOT_VERIFIED`) |
+| Any signed-in user | global feed (people/colleges they follow + own posts), like, comment (30 / 10 min), follow people and colleges, see upvoters |
+| College-verified | + create posts, read their college feed |
 | Faculty/staff pending college approval | verified-member powers, no upvote |
 | Faculty / staff (approved by their college) / admin | + upvote |
 | College rep (portal) | verify email, apply, then (approved) edit profile + approve faculty |
@@ -84,7 +85,8 @@ OTP endpoints and admin login fail closed (`503`), signup/login rate limits fail
 | `rate:login:{ip}:{email}` | 10 login attempts | 15 min |
 | `rate:admin-login:{ip}` | 5 admin login attempts | 15 min |
 | `rate:signup:{ip}` | 20 signups | 1 h |
-| `college-verification:*` | see "College email verification" | |
+| `rate:reset:{ip}:{email}` | 10 forgot/reset requests | 15 min |
+| `otp:{purpose}:*` | OTP engine, see "Email OTP" | |
 
 Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 
@@ -95,16 +97,21 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /api/auth/login` - Sign in
 - `POST /api/auth/admin-login` - Admin panel sign-in (`ADMIN_EMAIL` / `ADMIN_PASSWORD`)
 - `GET /api/auth/me` - Current user (same shape as signup/login `user`)
-- `PATCH /api/auth/profile` - Update `name`, `bio`, `department`, `avatar`, `graduationYear`
+- `PATCH /api/auth/profile` - Update `name`, `bio`, `department`, `avatar`, `banner` (https links), `graduationYear`
+- `POST /api/auth/verify-account/request` - Resend the signup code (new students)
+- `POST /api/auth/verify-account/confirm` - `{ otp }` - confirm the signup email
+- `POST /api/auth/forgot-password` - `{ email }` - always 200 (never reveals whether the account exists)
+- `POST /api/auth/reset-password` - `{ email, otp, password }` - logs out every session
 
 ### College verification
-- `POST /api/college-verification/request-otp` - Email a 6-digit code to the college address
+- `POST /api/college-verification/request-otp` - `{ collegeId, email, stream?, batchStart?, batchEnd? }` - email a code to the college address
 - `POST /api/college-verification/verify-otp` - Verify the code and mark the user verified
 
 ### Users
-- `GET /api/users/search?query=` - Search users by name
-- `GET /api/users/:userId` - Public profile
-- `POST /api/users/:userId/follow` - Follow/unfollow (verified)
+- `GET /api/users/search?query=` - Search students/faculty/staff by name
+- `GET /api/users/:userId` - Public profile + `isFollowing`, `followerCount`, `followingCount`
+- `GET /api/users/:userId/posts` - Their global posts, newest first
+- `POST /api/users/:userId/follow` - Follow/unfollow
 - `GET /api/users/:userId/followers` / `following`
 
 ### Colleges
@@ -140,13 +147,14 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /api/posts` - Create post (verified; max 10 tags, 4 images)
 - `GET /api/posts/:postId` - Get post
 - `DELETE /api/posts/:postId` - Delete own post
-- `POST /api/posts/:postId/like` - Toggle like (verified)
+- `POST /api/posts/:postId/like` - Toggle like
 - `POST /api/posts/:postId/upvote` - Toggle upvote (verified faculty/staff/admin)
-- `POST /api/posts/:postId/comments` - Add comment (verified)
+- `POST /api/posts/:postId/comments` - Add comment (rate-limited)
+- `GET /api/posts/:postId/upvoters` - Who upvoted
 - `GET /api/posts/:postId/comments?page=&limit=` - Comments
 
 ### Feed (all support `?page=&limit=`, limit max 50)
-- `GET /api/feed/global` - Global feed (`?tag=` to filter)
+- `GET /api/feed/global` - Following feed: followed people/colleges, own college, own posts (`?tag=` searches all)
 - `GET /api/feed/college` - College feed (verified)
 - `GET /api/feed/explore` - All global posts, most upvoted first
 - `GET /api/feed/tags/trending` - Trending tags
@@ -166,24 +174,28 @@ against the env values.
 - The panel itself lives at `/admin/colleges` and covers listing, searching, creating,
   editing colleges, managing their domains and enabling/disabling them.
 
-## College email verification
+## Email OTP
 
-The college is resolved **from the email domain only** - a `collegeId` sent by the
-client is never trusted. Only `active: true` colleges with a matching domain can be
-verified against.
+One engine (`modules/verification/otp.service.ts`) proves email ownership for every flow:
+`issueOtp(purpose, userId, email, options)` / `consumeOtp(purpose, userId, email, otp)`.
+Purposes: `account` (student signup email), `reset` (forgot password), `college` (college email),
+`portal` (college rep email). Each purpose has its own keys, so a code for one can never be used for another.
 
-### Flow
-1. `POST /api/college-verification/request-otp` with `{ "email": "student@example.edu.in" }`
-2. A 6-digit code (crypto.randomInt, HMAC-hashed in Redis) is emailed to that address
-3. `POST /api/college-verification/verify-otp` with `{ "email": "...", "otp": "123456" }`
-4. On success the user gets `collegeVerification { verified, collegeId, collegeEmail, method, verifiedAt }`
+### College verification flow
+1. The user picks a college (`GET /api/colleges` - approved + active, with domains).
+2. `POST /api/college-verification/request-otp` with `{ collegeId, email, stream, batchStart, batchEnd }`
+   (stream/batch required for students). The email's domain must be one of **that** college's domains,
+   otherwise `400 EMAIL_DOMAIN_MISMATCH` "This email domain does not belong to {college}".
+3. `POST /api/college-verification/verify-otp` with `{ email, otp }`.
+4. On success the user gets `collegeVerification { verified, collegeId, collegeEmail, method, verifiedAt }`,
+   plus `stream`, `batchStart`, `batchEnd` for students.
 
 ### Redis keys and TTLs
 | Key | Purpose | TTL |
 | --- | --- | --- |
-| `college-verification:otp:{userId}` | Hashed OTP + email + collegeId + attempts | 300 s |
-| `college-verification:resend:{userId}` | Resend cooldown marker | 60 s |
-| `college-verification:hourly:{userId}` | Requests in the current hour | 3600 s |
+| `otp:{purpose}:code:{userId}` | Hashed OTP + email + attempts + context | 300 s |
+| `otp:{purpose}:resend:{userId}` | Resend cooldown marker | 60 s |
+| `otp:{purpose}:hourly:{userId}` | Requests in the current hour | 3600 s |
 
 ### Limits (enforced server-side)
 - 1 OTP request per 60 seconds
@@ -193,7 +205,7 @@ verified against.
 - Successful verification deletes the OTP and resets the counters
 
 ### Error codes
-`INVALID_EMAIL`, `UNSUPPORTED_COLLEGE_DOMAIN`, `ALREADY_VERIFIED`,
+`INVALID_EMAIL`, `EMAIL_DOMAIN_MISMATCH`, `ACCOUNT_NOT_VERIFIED`, `ALREADY_VERIFIED`,
 `OTP_REQUEST_TOO_FREQUENT`, `OTP_HOURLY_LIMIT_EXCEEDED`, `OTP_EXPIRED`,
 `INVALID_OTP`, `EMAIL_MISMATCH`, `MAX_ATTEMPTS_EXCEEDED`, `EMAIL_SEND_FAILED`,
 `SERVICE_UNAVAILABLE`
@@ -242,20 +254,19 @@ college/domain validation, indexes and OTP hashing already pass locally).
 10. Request again immediately -> `429 OTP_REQUEST_TOO_FREQUENT` (60 s cooldown).
 11. Wait 60 s and repeat 5 times within an hour -> the 6th returns `429 OTP_HOURLY_LIMIT_EXCEEDED`.
 12. Enter a wrong code 5 times -> `429 MAX_ATTEMPTS_EXCEEDED` and the key is gone
-    (`redis-cli GET college-verification:otp:{userId}` returns nothing).
-13. `redis-cli TTL college-verification:otp:{userId}` never exceeds 300 s, and a wrong
+    (`redis-cli GET otp:college:code:{userId}` returns nothing).
+13. `redis-cli TTL otp:college:code:{userId}` never exceeds 300 s, and a wrong
     attempt does not extend it (`KEEPTTL`).
 14. Requesting a new code invalidates the previous one.
 15. Wait 5 minutes without verifying -> `400 OTP_EXPIRED`.
 16. After a successful verify the `otp`, `resend` and `hourly` keys are all deleted.
 
 **Security**
-17. Send `{ "email": "you@example.edu.in", "otp": "...", "collegeId": "<someone else's>" }` -
-    the supplied `collegeId` is ignored; only the domain-derived college is stored.
+17. Choose college A and enter an email on college B's domain -> `400 EMAIL_DOMAIN_MISMATCH`
+    naming college A; the college is always re-checked against the email.
 18. A different email than the one the code was issued for -> `400 EMAIL_MISMATCH`.
-19. A domain that belongs to no college -> `400 UNSUPPORTED_COLLEGE_DOMAIN`.
-20. Disable the college (`POST /api/colleges/:id/disable`) and request again ->
-    `400 UNSUPPORTED_COLLEGE_DOMAIN`.
+19. An unknown or pending `collegeId` -> `404 NOT_FOUND`.
+20. Disable the college (`POST /api/colleges/:id/disable`) and request again -> `404 NOT_FOUND`.
 21. `POST /api/auth/verify-college` -> `404` (the old client-supplied bypass is gone).
 22. Grep the server logs after a full flow - no OTP value is ever logged.
 
@@ -274,4 +285,4 @@ Admin panel:
 28. Edit the college to add/remove domains and save -> `GET /api/colleges/admin/list` reflects the
     new list; a domain already used by another college -> `409 DOMAIN_ALREADY_ASSIGNED`.
 29. Disable the college from its card -> the badge flips to `Disabled` and an OTP request for that
-    domain returns `400 UNSUPPORTED_COLLEGE_DOMAIN` (step 20); Enable restores it.
+    domain returns `404 NOT_FOUND` (step 20); Enable restores it.

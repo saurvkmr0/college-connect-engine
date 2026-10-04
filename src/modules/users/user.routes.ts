@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { authenticate, requireVerified } from '../../middleware/auth';
-import { followUser, getFollowers, getFollowing, getUserProfile, searchUsers } from './user.controller';
+import { authenticate } from '../../middleware/auth';
+import { reactionLimit } from '../../middleware/rateLimit';
+import { followUser, getFollowers, getFollowing, getUserPosts, getUserProfile, searchUsers } from './user.controller';
 
 const router = Router();
 
@@ -8,7 +9,8 @@ router.use(authenticate);
 
 router.get('/search', searchUsers);
 router.get('/:userId', getUserProfile);
-router.post('/:userId/follow', requireVerified, followUser);
+router.get('/:userId/posts', getUserPosts);
+router.post('/:userId/follow', reactionLimit, followUser);
 router.get('/:userId/followers', getFollowers);
 router.get('/:userId/following', getFollowing);
 

@@ -32,10 +32,10 @@ const BY_UPVOTES: PipelineStage[] = [
 ];
 
 /**
- * Global feed, ranked by engagement:
+ * Global feed, ranked by engagement. Open to every signed-in user:
  * - `?tag=` - every global post with that tag
- * - verified users - people they follow, their own college, colleges they follow
- * - unverified users - every global post (read-only until they verify)
+ * - otherwise only "following" content: people I follow, my own posts, colleges I follow
+ *   (still public) and my own college. A brand-new user sees an empty feed (the UI points to Search).
  */
 export const getGlobalFeed = asyncHandler(async (req, res) => {
   const { page, limit, skip } = parsePagination(req.query);
@@ -45,16 +45,17 @@ export const getGlobalFeed = asyncHandler(async (req, res) => {
   const match: FilterQuery<IPost> = { type: PostType.GLOBAL };
   if (tag) {
     match.tags = tag;
-  } else if (collegeId) {
+  } else {
     const me = await User.findById(userId).select('following followedColleges').lean();
     // Followed colleges that were disabled since stop appearing.
     const followedColleges = me?.followedColleges?.length
       ? await College.find({ _id: { $in: me.followedColleges }, ...PUBLIC_COLLEGE }).distinct('_id')
       : [];
+    const self = new Types.ObjectId(userId);
     match.$or = [
-      { author: { $in: me?.following ?? [] } },
-      { college: new Types.ObjectId(collegeId) },
+      { author: { $in: [self, ...(me?.following ?? [])] } },
       { college: { $in: followedColleges } },
+      ...(collegeId ? [{ college: new Types.ObjectId(collegeId) }] : []),
     ];
   }
 

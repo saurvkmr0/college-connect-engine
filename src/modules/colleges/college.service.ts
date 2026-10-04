@@ -2,54 +2,11 @@ import { randomInt } from 'node:crypto';
 import { Types } from 'mongoose';
 import { ICollege, CollegeVerificationStatus, PostType, UserRole } from '../../types';
 import { ApiError } from '../../utils/apiError';
-import {
-  extractDomain,
-  isValidDomain,
-  isValidEmail,
-  normalizeDomain,
-  normalizeEmail,
-} from '../../utils/emailValidation';
+import { isValidDomain, normalizeDomain } from '../../utils/emailValidation';
 import { isHttpsUrl } from '../../utils/request';
 import { Post } from '../posts/post.model';
 import { User } from '../users/user.model';
 import { College } from './college.model';
-
-/* ------------------------------------------------------------------ */
-/* Email -> college validation (reusable)                              */
-/* ------------------------------------------------------------------ */
-
-export type CollegeEmailValidation =
-  | { valid: true; college: { id: string; name: string }; domain: string }
-  | { valid: false; reason: 'INVALID_EMAIL' | 'UNSUPPORTED_COLLEGE_DOMAIN' };
-
-/**
- * Determines the college from the email domain alone.
- * The client never supplies a college id - it is always resolved here.
- */
-export const validateCollegeEmail = async (email: string): Promise<CollegeEmailValidation> => {
-  const normalized = normalizeEmail(email);
-
-  if (!isValidEmail(normalized)) {
-    return { valid: false, reason: 'INVALID_EMAIL' };
-  }
-
-  const domain = extractDomain(normalized);
-  if (!domain || !isValidDomain(domain)) {
-    return { valid: false, reason: 'INVALID_EMAIL' };
-  }
-
-  // Only active colleges may be used for verification.
-  const college = await College.findOne({ domains: domain, active: true }).select('name active');
-  if (!college) {
-    return { valid: false, reason: 'UNSUPPORTED_COLLEGE_DOMAIN' };
-  }
-
-  return {
-    valid: true,
-    college: { id: college._id.toString(), name: college.name },
-    domain,
-  };
-};
 
 /* ------------------------------------------------------------------ */
 /* Domain helpers                                                      */

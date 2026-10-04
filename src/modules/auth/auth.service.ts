@@ -20,6 +20,13 @@ const PASSWORD_MAX = 72;
 /** Compared against when the email is unknown, so response time does not reveal which emails exist. */
 const DUMMY_HASH = bcrypt.hashSync(randomBytes(16).toString('hex'), BCRYPT_ROUNDS);
 
+/** The one password rule, used by signup, portal register and password reset. */
+export const assertValidPassword = (password: string): void => {
+  if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Password must be ${PASSWORD_MIN}-${PASSWORD_MAX} characters`);
+  }
+};
+
 export const readPassword = (value: unknown): string => (typeof value === 'string' ? value : '');
 export const hashPassword = (plain: string): Promise<string> => bcrypt.hash(plain, BCRYPT_ROUNDS);
 
@@ -34,9 +41,7 @@ export const parseNewAccount = async (body: unknown) => {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Name, email, and password are required');
   }
   if (!isValidEmail(email)) throw new ApiError(400, 'INVALID_EMAIL', 'Please enter a valid email address.');
-  if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
-    throw new ApiError(400, 'VALIDATION_ERROR', `Password must be ${PASSWORD_MIN}-${PASSWORD_MAX} characters`);
-  }
+  assertValidPassword(password);
   // The admin email is reserved: registering it first would let someone take over the
   // admin account. Same message as a normal duplicate so the admin email is not revealed.
   if (email === config.admin.email || (await User.exists({ email }))) {
@@ -52,7 +57,7 @@ export const findByCredentials = async (body: unknown): Promise<IUser> => {
   const password = readPassword(source.password);
   if (!email || !password) throw new ApiError(400, 'VALIDATION_ERROR', 'Email and password are required');
 
-  const user = await User.findOne({ email }).select('+password');
+  const user = await User.findOne({ email }).select('+password +tokenVersion');
   const matches = await bcrypt.compare(password, user?.password ?? DUMMY_HASH);
   if (!user || !matches) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
   return user;

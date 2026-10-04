@@ -25,18 +25,21 @@ export const mailgunProvider: EmailProvider = {
 
     let response: Response;
     try {
+      console.log('Mailgun request:', `${apiBase}/v3/${domain}/messages`);
       response = await fetch(`${apiBase}/v3/${domain}/messages`, {
         method: 'POST',
         headers: { Authorization: `Basic ${Buffer.from(`api:${apiKey}`).toString('base64')}` },
         body,
       });
     } catch (error) {
+      console.error('Mailgun request failed:', error);
       // Deliberately logs no request content - the body contains the OTP.
       throw new Error(`Mailgun request failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
 
     if (!response.ok) {
       // Status only: never log the OTP or the full payload.
+      console.error('Mailgun responded with status:', JSON.stringify(response));
       throw new Error(`Mailgun responded with status ${response.status}`);
     }
   },

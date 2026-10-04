@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { authenticate, requireVerified } from '../../middleware/auth';
+import { commentLimit, reactionLimit } from '../../middleware/rateLimit';
 import {
   addComment,
   createPost,
   deletePost,
   getComments,
   getPost,
+  getUpvoters,
   toggleLike,
   toggleUpvote,
 } from './post.controller';
@@ -14,15 +16,16 @@ const router = Router();
 
 router.use(authenticate);
 
-// Reading is open to every signed-in user (visibility rules apply);
-// writing and interacting require a verified college email.
+// Every signed-in user may read, like and comment (visibility rules still apply).
+// Creating posts needs a verified college email; upvoting needs college-approved faculty/staff.
 router.get('/:postId', getPost);
 router.get('/:postId/comments', getComments);
+router.get('/:postId/upvoters', getUpvoters);
 
 router.post('/', requireVerified, createPost);
 router.delete('/:postId', deletePost);
-router.post('/:postId/like', requireVerified, toggleLike);
+router.post('/:postId/like', reactionLimit, toggleLike);
 router.post('/:postId/upvote', requireVerified, toggleUpvote);
-router.post('/:postId/comments', requireVerified, addComment);
+router.post('/:postId/comments', commentLimit, addComment);
 
 export default router;
