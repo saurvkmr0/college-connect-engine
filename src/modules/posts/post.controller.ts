@@ -3,11 +3,12 @@ import { parsePagination, str } from '../../utils/request';
 import { COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
 import { AUTHOR_FIELDS } from '../users/user.model';
 import { Comment } from './comment.model';
+import { MAX_POST_MEDIA } from '../media/media.constants';
+import { claimAssets, releaseObject, unclaimAssets } from '../media/media.service';
 import { Post } from './post.model';
 import {
   adjustTagCounts,
   assertPostVisible,
-  normalizeImages,
   normalizeTags,
   togglePostReaction,
 } from './post.service';
@@ -18,15 +19,27 @@ export const createPost = asyncHandler(async (req, res) => {
   const type = str(req.body?.type);
   if (!content || !type) throw new ApiError(400, 'VALIDATION_ERROR', 'Content and post type are required');
 
+  const rawMedia = Array.isArray(req.body?.media) ? req.body.media : [];
+  if (rawMedia.length > MAX_POST_MEDIA) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `At most ${MAX_POST_MEDIA} media items per post`);
+  }
+  const media = await claimAssets(req.user!, rawMedia, ['post']);
+
   // Schema validation rejects unknown types and over-long content with a 400.
-  const post = await Post.create({
-    author: req.user!.userId,
-    college: req.user!.collegeId,
-    type,
-    content,
-    images: normalizeImages(req.body?.images),
-    tags: normalizeTags(req.body?.tags),
-  });
+  let post;
+  try {
+    post = await Post.create({
+      author: req.user!.userId,
+      college: req.user!.collegeId,
+      type,
+      content,
+      media: media.map(({ objectKey, kind }) => ({ objectKey, kind })),
+      tags: normalizeTags(req.body?.tags),
+    });
+  } catch (error) {
+    await unclaimAssets(media.map((m) => m.assetId)); // the sweeper deletes them
+    throw error;
+  }
   await adjustTagCounts(post.tags, 1);
   await post.populate([
     { path: 'author', select: AUTHOR_FIELDS },
@@ -50,7 +63,7 @@ export const getPost = asyncHandler(async (req, res) => {
 });
 
 export const deletePost = asyncHandler(async (req, res) => {
-  const post = await Post.findById(req.params.postId).select('author tags');
+  const post = await Post.findById(req.params.postId).select('author tags media');
   if (!post) throw new ApiError(404, 'NOT_FOUND', 'Post not found');
   if (post.author.toString() !== req.user!.userId) {
     throw new ApiError(403, 'FORBIDDEN', 'You can only delete your own posts');
@@ -61,6 +74,8 @@ export const deletePost = asyncHandler(async (req, res) => {
     Comment.deleteMany({ post: post._id }),
     adjustTagCounts(post.tags, -1),
   ]);
+  // The post is gone: delete its uploaded media (failures are retried by the sweeper).
+  await Promise.all(post.media.map((m) => releaseObject(m.objectKey)));
 
   res.json({ message: 'Post deleted successfully' });
 });

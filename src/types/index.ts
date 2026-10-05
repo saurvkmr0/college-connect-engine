@@ -99,7 +99,10 @@ export interface IPost extends Document {
   college: Types.ObjectId;
   type: PostType;
   content: string;
+  /** Legacy image links (posts created before uploads). */
   images: string[];
+  /** Uploaded media - object keys, never URLs. */
+  media: { objectKey: string; kind: 'image' | 'video' }[];
   tags: string[];
   likes: Types.ObjectId[];
   upvotes: Types.ObjectId[];

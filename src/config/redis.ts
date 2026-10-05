@@ -85,12 +85,15 @@ export const redisCommand = async <T>(fn: () => Promise<T>): Promise<T> => {
   }
 };
 
-/** Fixed-window counter: increments `key` and starts the window on the first hit. Returns the new count. */
-export const incrementWindow = (key: string, windowSeconds: number): Promise<number> =>
+/**
+ * Fixed-window counter: adds `amount` (default 1) to `key` and starts the window on the first
+ * hit. Returns the new total. Also used for byte quotas.
+ */
+export const incrementWindow = (key: string, windowSeconds: number, amount = 1): Promise<number> =>
   redisCommand(async () => {
-    const count = await redisClient.incr(key);
+    const count = await redisClient.incrBy(key, amount);
     // First hit (or a lost expiry) starts the window.
-    if (count === 1 || (await redisClient.ttl(key)) < 0) {
+    if (count === amount || (await redisClient.ttl(key)) < 0) {
       await redisClient.expire(key, windowSeconds);
     }
     return count;

@@ -87,6 +87,9 @@ OTP endpoints and admin login fail closed (`503`), signup/login rate limits fail
 | `rate:signup:{ip}` | 20 signups | 1 h |
 | `rate:reset:{ip}:{email}` | 10 forgot/reset requests | 15 min |
 | `otp:{purpose}:*` | OTP engine, see "Email OTP" | |
+| `rate:media-user:{userId}` / `rate:media-ip:{ip}` | 10 / 30 upload URLs | 1 min |
+| `rate:media-daily-count:{userId}` / `rate:media-daily-bytes:{userId}` | 50 URLs / 500 MB declared | 24 h |
+| `lock:media-sweeper` | one sweeper run at a time | 10 min |
 
 Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 
@@ -97,7 +100,7 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /api/auth/login` - Sign in
 - `POST /api/auth/admin-login` - Admin panel sign-in (`ADMIN_EMAIL` / `ADMIN_PASSWORD`)
 - `GET /api/auth/me` - Current user (same shape as signup/login `user`)
-- `PATCH /api/auth/profile` - Update `name`, `bio`, `department`, `avatar`, `banner` (https links), `graduationYear`
+- `PATCH /api/auth/profile` - Update `name`, `bio`, `department`, `graduationYear`, `avatarAssetId`, `bannerAssetId`
 - `POST /api/auth/verify-account/request` - Resend the signup code (new students)
 - `POST /api/auth/verify-account/confirm` - `{ otp }` - confirm the signup email
 - `POST /api/auth/forgot-password` - `{ email }` - always 200 (never reveals whether the account exists)
@@ -152,6 +155,12 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /api/posts/:postId/comments` - Add comment (rate-limited)
 - `GET /api/posts/:postId/upvoters` - Who upvoted
 - `GET /api/posts/:postId/comments?page=&limit=` - Comments
+
+### Media (uploads straight to storage)
+- `POST /api/media/upload-url` - `{ resourceType, contentType, fileSize, extension, collegeId? }` -> `{ uploadUrl, assetId, key, expiresIn }`
+- `DELETE /api/media/:assetId` - discard your own pending upload
+- Attach with `avatarAssetId` / `bannerAssetId` (`PATCH /api/auth/profile`), `media: [assetId]` (`POST /api/posts`),
+  `logoAssetId` / `bannerAssetId` (college admin/portal updates). `''` removes an image.
 
 ### Feed (all support `?page=&limit=`, limit max 50)
 - `GET /api/feed/global` - Following feed: followed people/colleges, own college, own posts (`?tag=` searches all)
@@ -286,3 +295,43 @@ Admin panel:
     new list; a domain already used by another college -> `409 DOMAIN_ALREADY_ASSIGNED`.
 29. Disable the college from its card -> the badge flips to `Disabled` and an OTP request for that
     domain returns `404 NOT_FOUND` (step 20); Enable restores it.
+
+## Public media storage (Cloudflare R2)
+
+**Flow:** the browser asks `POST /api/media/upload-url` → the API validates, rate-limits, generates the
+object key and signs a 10-minute PUT URL (Content-Type and Content-Length are part of the signature) →
+the browser PUTs the file **directly to R2** → the profile/post/college save sends the `assetId`; the
+API HEAD-checks the object once and stores the **object key**. Every JSON response turns stored keys into
+`R2_PUBLIC_BASE_URL/<key>` (`modules/media/media.serializer.ts`), so feeds never call storage and changing
+domain/provider needs no data migration. Old `https://` image links keep working unchanged.
+
+**Code layout:** `services/storage/` is the provider-independent `StorageService` (`R2StorageService` is
+the only code that knows the AWS SDK/R2). `modules/media/` holds the rules table (`media.constants.ts`:
+types, size limits, quotas), asset records, upload/attach logic and the sweeper. Adding a provider =
+one new class in `services/storage/providers/` + a case in `services/storage/index.ts`. A private bucket
+(chat files) later = a second `StorageService` instance plus signed GET URLs - nothing here changes.
+
+**Keys:** `users/{userId}/avatar|banner/{uuid}.{ext}`, `posts/{userId}/{uuid}.{ext}`,
+`colleges/{collegeId}/logo|banner/{uuid}.{ext}` - server-generated, unique, never overwritten
+(cache-friendly: a new image is a new key).
+
+**Cleanup:** uploads not attached within 24 h, and objects whose delete failed, are removed by the
+in-app sweeper every 15 minutes (Redis lock: one instance at a time).
+
+### R2 setup (one time)
+1. Create an R2 API token with **Object Read & Write** on this bucket only; put its keys in `.env`.
+2. Connect a **custom domain** to the bucket (e.g. `media.example.com`) and set `R2_PUBLIC_BASE_URL`.
+   Do not use the `r2.dev` URL in production. Optional: a Cloudflare cache rule with a long TTL - keys are immutable.
+3. Bucket → Settings → **CORS policy** (only your real origins, PUT only):
+   ```json
+   [
+     {
+       "AllowedOrigins": ["http://localhost:5173", "https://your-app-domain.com"],
+       "AllowedMethods": ["PUT"],
+       "AllowedHeaders": ["content-type"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+4. Manual test: sign in, open Profile → upload a picture → Save. The network tab shows a `PUT` to
+   `<account>.r2.cloudflarestorage.com` (not to the API), and the avatar loads from `R2_PUBLIC_BASE_URL`.

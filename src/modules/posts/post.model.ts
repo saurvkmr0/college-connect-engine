@@ -1,5 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import { IPost, PostType } from '../../types';
+import { MAX_POST_MEDIA } from '../media/media.constants';
 
 export const MAX_TAGS = 10;
 export const MAX_IMAGES = 4;
@@ -20,6 +21,17 @@ const postSchema = new Schema<IPost>(
     },
     content: { type: String, required: true, trim: true, maxlength: 2000 },
     images: { type: [{ type: String, trim: true, maxlength: 500 }], validate: maxItems(MAX_IMAGES, 'images') },
+    // Uploaded media (object keys; URLs are derived on output). Up to 4, any mix of images/videos.
+    media: {
+      type: [
+        {
+          _id: false,
+          objectKey: { type: String, required: true },
+          kind: { type: String, enum: ['image', 'video'], required: true },
+        },
+      ],
+      validate: maxItems(MAX_POST_MEDIA, 'media items'),
+    },
     tags: {
       type: [{ type: String, lowercase: true, trim: true, maxlength: 30 }],
       validate: maxItems(MAX_TAGS, 'tags'),

@@ -8,6 +8,7 @@ import { User } from '../users/user.model';
 import { College, PUBLIC_COLLEGE } from './college.model';
 import {
   addDomains,
+  applyCollegeImages,
   createCollege,
   getCollegeStats,
   parseCollegeInput,
@@ -124,7 +125,8 @@ export const createCollegeAdmin = asyncHandler(async (req, res) => {
 
 export const updateCollegeAdmin = asyncHandler(async (req, res) => {
   const college = await updateCollege(req.params.collegeId, parseCollegeInput(req.body));
-  sendSuccess(res, 200, 'College updated', { college });
+  const withImages = await applyCollegeImages(req.user!, req.params.collegeId, req.body);
+  sendSuccess(res, 200, 'College updated', { college: withImages ?? college });
 });
 
 export const enableCollege = asyncHandler(async (req, res) => {

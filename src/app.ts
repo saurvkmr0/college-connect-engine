@@ -7,6 +7,8 @@ import applicationRoutes from './modules/applications/applications.routes';
 import authRoutes from './modules/auth/auth.routes';
 import collegeRoutes from './modules/colleges/college.routes';
 import feedRoutes from './modules/feed/feed.routes';
+import { mediaJsonReplacer } from './modules/media/media.serializer';
+import mediaRoutes from './modules/media/media.routes';
 import portalRoutes from './modules/portal/portal.routes';
 import postRoutes from './modules/posts/post.routes';
 import userRoutes from './modules/users/user.routes';
@@ -18,6 +20,8 @@ app.disable('x-powered-by');
 app.set('trust proxy', config.trustProxy);
 // Flat query strings only: `?tag[$ne]=x` stays a plain string key instead of becoming an object.
 app.set('query parser', 'simple');
+// Stored media keys -> public URLs in every JSON response (see media.serializer.ts).
+app.set('json replacer', mediaJsonReplacer);
 
 app.use(cors({ origin: config.clientUrl, credentials: true }));
 app.use(express.json({ limit: '100kb' }));
@@ -35,6 +39,7 @@ app.use('/api/college-verification', verificationRoutes);
 app.use('/api/college-portal', portalRoutes);
 app.use('/api/posts', postRoutes);
 app.use('/api/feed', feedRoutes);
+app.use('/api/media', mediaRoutes);
 app.use('/api/admin/college-applications', applicationRoutes);
 
 app.use(notFound);

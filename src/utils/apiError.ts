@@ -29,6 +29,10 @@ export type ApiErrorCode =
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'FILE_TOO_LARGE'
+  | 'MEDIA_NOT_UPLOADED'
+  | 'STORAGE_NOT_CONFIGURED'
+  | 'STORAGE_UNAVAILABLE'
   | 'INTERNAL_ERROR';
 
 /** Throw this anywhere; the error middleware turns it into the response. */

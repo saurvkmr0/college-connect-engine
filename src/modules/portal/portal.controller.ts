@@ -4,6 +4,7 @@ import { extractDomain, isFreeEmailDomain } from '../../utils/emailValidation';
 import { findByCredentials, hashPassword, parseNewAccount, sessionPayload } from '../auth/auth.service';
 import { User } from '../users/user.model';
 import { consumeOtp, issueOtp } from '../verification/otp.service';
+import { applyCollegeImages } from '../colleges/college.service';
 import { applyForCollege, loadDashboard, updateManagedCollege } from './portal.service';
 
 /* ------------------------------------------------------------------ */
@@ -64,7 +65,9 @@ export const getDashboard = asyncHandler(async (req, res) => {
 });
 
 export const updateCollegeProfile = asyncHandler(async (req, res) => {
-  sendSuccess(res, 200, 'College updated', { college: await updateManagedCollege(req.user!, req.body) });
+  const college = await updateManagedCollege(req.user!, req.body);
+  const withImages = await applyCollegeImages(req.user!, req.user!.managedCollegeId!, req.body);
+  sendSuccess(res, 200, 'College updated', { college: withImages ?? college });
 });
 
 /* ------------------------------------------------------------------ */

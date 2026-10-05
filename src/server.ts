@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import app from './app';
 import { config } from './config';
 import { closeRedis, connectRedis } from './config/redis';
+import { startMediaSweeper } from './modules/media/media.sweeper';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -12,6 +13,8 @@ const start = async () => {
   // A Redis outage must not stop the API: OTP verification and admin login fail
   // closed (503), user login/signup rate limits fail open, until Redis is back.
   await connectRedis();
+  // Removes abandoned uploads and retries failed media deletes every 15 minutes.
+  startMediaSweeper();
 
   const server = app.listen(config.port, () => {
     console.log(`Server running on port ${config.port} (${process.env.NODE_ENV || 'development'})`);

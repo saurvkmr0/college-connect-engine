@@ -1,9 +1,10 @@
 import { randomInt } from 'node:crypto';
 import { Types } from 'mongoose';
-import { ICollege, CollegeVerificationStatus, PostType, UserRole } from '../../types';
+import { AuthUser, ICollege, CollegeVerificationStatus, PostType, UserRole } from '../../types';
+import { str } from '../../utils/request';
+import { claimAssets, isObjectKey, releaseObject, unclaimAssets } from '../media/media.service';
 import { ApiError } from '../../utils/apiError';
 import { isValidDomain, normalizeDomain } from '../../utils/emailValidation';
-import { isHttpsUrl } from '../../utils/request';
 import { Post } from '../posts/post.model';
 import { User } from '../users/user.model';
 import { College } from './college.model';
@@ -99,8 +100,6 @@ export interface CollegeInput {
   city?: string;
   address?: string;
   description?: string;
-  logo?: string;
-  bannerImage?: string;
   active?: boolean;
 }
 
@@ -113,11 +112,8 @@ const TEXT_LIMITS = {
   city: 100,
   address: 300,
   description: 2000,
-  logo: 500,
-  bannerImage: 500,
 } as const;
 const TEXT_FIELDS = Object.keys(TEXT_LIMITS) as (keyof typeof TEXT_LIMITS)[];
-const IMAGE_FIELDS = { logo: 'Profile image', bannerImage: 'Banner image' } as const;
 
 /**
  * Builds a CollegeInput from an untrusted request body: only known fields, only
@@ -137,10 +133,6 @@ export const parseCollegeInput = (body: unknown): CollegeInput => {
   }
   if (typeof source.active === 'boolean') input.active = source.active;
   if (source.domains !== undefined) input.domains = source.domains as string[];
-  for (const [field, label] of Object.entries(IMAGE_FIELDS) as [keyof typeof IMAGE_FIELDS, string][]) {
-    const url = input[field]?.trim();
-    if (url && !isHttpsUrl(url)) throw new ApiError(400, 'VALIDATION_ERROR', `${label} must be an https:// image link`);
-  }
   return input;
 };
 
@@ -187,8 +179,6 @@ export const createCollege = async (
       city: input.city?.trim(),
       address: input.address?.trim(),
       description: input.description?.trim(),
-      logo: input.logo?.trim(),
-      bannerImage: input.bannerImage?.trim(),
       active: input.active ?? true,
       // Admin-created colleges are approved; portal applications start pending.
       verificationStatus: status,
@@ -224,8 +214,6 @@ export const updateCollege = async (
   if (input.city !== undefined) college.city = input.city.trim();
   if (input.address !== undefined) college.address = input.address.trim();
   if (input.description !== undefined) college.description = input.description.trim();
-  if (input.logo !== undefined) college.logo = input.logo.trim();
-  if (input.bannerImage !== undefined) college.bannerImage = input.bannerImage.trim();
   if (input.active !== undefined) college.active = Boolean(input.active);
   // Domains are managed through the dedicated domain endpoints only.
 
@@ -310,4 +298,48 @@ export const getCollegeStats = async (collegeId: Types.ObjectId | string) => {
     Post.countDocuments({ college: id, type: PostType.GLOBAL }),
   ]);
   return { studentCount, facultyCount, pendingFacultyCount, followerCount, postCount };
+};
+
+/* ------------------------------------------------------------------ */
+/* Images (uploaded media)                                              */
+/* ------------------------------------------------------------------ */
+
+const COLLEGE_IMAGES = {
+  logoAssetId: { field: 'logo', resource: 'college_logo' },
+  bannerAssetId: { field: 'bannerImage', resource: 'college_banner' },
+} as const;
+
+/**
+ * Applies `logoAssetId` / `bannerAssetId` ('' clears) from a request body. The uploads must
+ * have been made for this college by the caller. Old objects are deleted after the update.
+ * Returns the updated college, or null when the body had no image fields.
+ */
+export const applyCollegeImages = async (user: AuthUser, collegeId: string, body: unknown): Promise<ICollege | null> => {
+  const source = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const params = Object.entries(COLLEGE_IMAGES).filter(([param]) => source[param] !== undefined);
+  if (params.length === 0) return null;
+
+  const college = await getCollegeOrThrow(collegeId);
+  const replaced: string[] = [];
+  const claimed: string[] = [];
+  try {
+    for (const [param, { field, resource }] of params) {
+      const assetId = str(source[param]);
+      const previous = college[field];
+      if (assetId) {
+        const [media] = await claimAssets(user, assetId, [resource], { collegeId });
+        college[field] = media.objectKey;
+        claimed.push(media.assetId);
+      } else {
+        college[field] = undefined;
+      }
+      if (isObjectKey(previous)) replaced.push(previous);
+    }
+    await college.save();
+  } catch (error) {
+    await unclaimAssets(claimed);
+    throw error;
+  }
+  await Promise.all(replaced.map(releaseObject));
+  return college;
 };

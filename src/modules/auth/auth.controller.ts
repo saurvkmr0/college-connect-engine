@@ -5,10 +5,11 @@ import { UserRole } from '../../types';
 import { ApiError, asyncHandler, sendSuccess } from '../../utils/apiError';
 import { isValidEmail, normalizeEmail } from '../../utils/emailValidation';
 import { generateToken } from '../../utils/jwt';
-import { isHttpsUrl, str } from '../../utils/request';
+import { str } from '../../utils/request';
 import { constantTimeEqual } from '../../utils/secureCompare';
 import { MEMBER_ROLES, User } from '../users/user.model';
 import { consumeOtp, issueOtp } from '../verification/otp.service';
+import { claimAssets, isObjectKey, releaseObject, unclaimAssets } from '../media/media.service';
 import {
   assertValidPassword,
   BCRYPT_ROUNDS,
@@ -131,25 +132,46 @@ export const getMe = asyncHandler(async (req, res) => {
 });
 
 /** Only these fields can be edited; anything else in the body is ignored. */
-const PROFILE_TEXT_FIELDS = ['name', 'bio', 'department', 'avatar', 'banner'] as const;
-/** Image links: https only until uploads exist (blocks http:, javascript:, data:). '' clears. */
-const IMAGE_FIELDS = { avatar: 'Profile picture', banner: 'Banner' } as const;
+const PROFILE_TEXT_FIELDS = ['name', 'bio', 'department'] as const;
+/** Images are uploaded first; the profile only accepts the resulting asset ids ('' clears). */
+const PROFILE_IMAGES = {
+  avatarAssetId: { field: 'avatar', resource: 'avatar' },
+  bannerAssetId: { field: 'banner', resource: 'banner' },
+} as const;
 
 export const updateProfile = asyncHandler(async (req, res) => {
-  const updates: Record<string, unknown> = {};
+  const $set: Record<string, unknown> = {};
+  const $unset: Record<string, 1> = {};
   for (const field of PROFILE_TEXT_FIELDS) {
-    if (typeof req.body?.[field] === 'string') updates[field] = req.body[field].trim();
+    if (typeof req.body?.[field] === 'string') $set[field] = req.body[field].trim();
   }
-  if (req.body?.graduationYear !== undefined) updates.graduationYear = Number(req.body.graduationYear);
-  for (const [field, label] of Object.entries(IMAGE_FIELDS)) {
-    const url = updates[field];
-    if (typeof url === 'string' && url && !isHttpsUrl(url)) {
-      throw new ApiError(400, 'VALIDATION_ERROR', `${label} must be an https:// image link`);
-    }
-  }
+  if (req.body?.graduationYear !== undefined) $set.graduationYear = Number(req.body.graduationYear);
 
-  // runValidators enforces the schema limits (required name, maxlength, year range) on updates too.
-  await User.updateOne({ _id: req.user!.userId }, { $set: updates }, { runValidators: true });
+  const before = await User.findById(req.user!.userId).select('avatar banner').lean();
+  const replaced: string[] = [];
+  const claimed: string[] = [];
+  try {
+    for (const [param, { field, resource }] of Object.entries(PROFILE_IMAGES)) {
+      if (req.body?.[param] === undefined) continue;
+      const assetId = str(req.body[param]);
+      if (assetId) {
+        const [media] = await claimAssets(req.user!, assetId, [resource]);
+        $set[field] = media.objectKey;
+        claimed.push(media.assetId);
+      } else {
+        $unset[field] = 1;
+      }
+      if (isObjectKey(before?.[field])) replaced.push(before![field]!);
+    }
+    // runValidators enforces the schema limits (required name, maxlength, year range) on updates too.
+    await User.updateOne({ _id: req.user!.userId }, { $set, $unset }, { runValidators: true });
+  } catch (error) {
+    // e.g. avatar attached but banner failed: release everything so the same uploads can be retried.
+    await unclaimAssets(claimed);
+    throw error;
+  }
+  // Only after the DB points at the new image: delete the old object (failures retried by the sweeper).
+  await Promise.all(replaced.map(releaseObject));
 
   res.json({ user: await getSelf(req.user!.userId) });
 });

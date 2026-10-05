@@ -46,6 +46,18 @@ export const config = {
   admin,
   /** HMAC key for OTPs stored in Redis. Defaults to the JWT secret. */
   otpHashSecret: process.env.OTP_HASH_SECRET || jwtSecret,
+  /** Public media (avatars, post media, college images). Optional: without it uploads return 503. */
+  storage: {
+    provider: process.env.STORAGE_PROVIDER || 'r2',
+    /** Custom domain serving the public bucket, e.g. https://media.example.com (never r2.dev in production). */
+    publicBaseUrl: process.env.R2_PUBLIC_BASE_URL || '',
+    r2: {
+      accountId: process.env.R2_ACCOUNT_ID || '',
+      accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+      bucket: process.env.R2_BUCKET_NAME || '',
+    },
+  },
   email: {
     /** Active email adapter: 'mailgun' | 'log' ('log' is for development only). */
     provider: process.env.EMAIL_PROVIDER || 'mailgun',

@@ -5,7 +5,8 @@ import { normalizeDomain } from '../../utils/emailValidation';
 /** College snippet embedded in users, posts and feeds. */
 export const COLLEGE_SUMMARY_FIELDS = 'name code logo';
 /** Fields an approved rep may edit from the portal. Name, code and domains stay admin-only. */
-export const COLLEGE_PROFILE_FIELDS = ['description', 'logo', 'bannerImage', 'country', 'state', 'city', 'address'] as const;
+export const COLLEGE_PROFILE_FIELDS = ['description', 'country', 'state', 'city', 'address'] as const;
+// Logo/banner are uploads: set via logoAssetId / bannerAssetId (applyCollegeImages).
 /** What the public may see (search, profile, posts, follow, followed-college feed): approved and not disabled. */
 export const PUBLIC_COLLEGE = { verificationStatus: CollegeVerificationStatus.APPROVED, active: true };
 

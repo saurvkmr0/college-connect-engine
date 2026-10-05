@@ -1,5 +1,6 @@
 import { ErrorRequestHandler, RequestHandler } from 'express';
 import mongoose from 'mongoose';
+import { StorageConfigurationError, StorageError } from '../services/storage';
 import { ApiError } from '../utils/apiError';
 
 export const notFound: RequestHandler = () => {
@@ -9,6 +10,14 @@ export const notFound: RequestHandler = () => {
 /** Maps known library errors to a client-safe ApiError; anything unknown is a 500. */
 const toApiError = (err: unknown): ApiError => {
   if (err instanceof ApiError) return err;
+
+  // Storage failures never reach the client as raw SDK errors (no bucket/account details).
+  if (err instanceof StorageConfigurationError) {
+    return new ApiError(503, 'STORAGE_NOT_CONFIGURED', 'Media uploads are not available right now.');
+  }
+  if (err instanceof StorageError) {
+    return new ApiError(503, 'STORAGE_UNAVAILABLE', 'Media storage is temporarily unavailable. Please try again.');
+  }
 
   // Malformed ids (e.g. /posts/abc) - treat as "not found" rather than crashing.
   if (err instanceof mongoose.Error.CastError) {
@@ -34,7 +43,13 @@ const toApiError = (err: unknown): ApiError => {
 /** Single place that turns any thrown error into `{ success: false, error: { code, message } }`. */
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   const apiError = toApiError(err);
-  if (apiError.status >= 500) console.error(`${req.method} ${req.originalUrl} failed:`, err);
+  if (err instanceof StorageError) {
+    // Safe identifiers only - raw provider errors can carry bucket/account/host details.
+    const cause = (err as { cause?: { name?: string } }).cause;
+    console.error(JSON.stringify({ scope: 'storage', event: 'storage_error', method: req.method, path: req.route?.path ?? req.path, errorCode: apiError.code, error: err.name, cause: cause?.name }));
+  } else if (apiError.status >= 500) {
+    console.error(`${req.method} ${req.originalUrl} failed:`, err);
+  }
   res.status(apiError.status).json({
     success: false,
     error: { code: apiError.code, message: apiError.message },

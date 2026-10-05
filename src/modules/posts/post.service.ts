@@ -3,7 +3,7 @@ import { AuthUser, IPost, PostType } from '../../types';
 import { ApiError } from '../../utils/apiError';
 import { College, COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
 import { AUTHOR_FIELDS, User } from '../users/user.model';
-import { MAX_IMAGES, MAX_TAGS, Post } from './post.model';
+import { MAX_TAGS, Post } from './post.model';
 import { Tag } from './tag.model';
 
 /**
@@ -25,12 +25,6 @@ export const normalizeTags = (raw: unknown): string[] => {
     .filter(Boolean);
   return [...new Set(tags)].slice(0, MAX_TAGS);
 };
-
-/** Untrusted image list -> string URLs only, capped. */
-export const normalizeImages = (raw: unknown): string[] =>
-  Array.isArray(raw)
-    ? raw.filter((url): url is string => typeof url === 'string' && url.trim() !== '').slice(0, MAX_IMAGES)
-    : [];
 
 /** Adjusts trending-tag counters in one round trip. New tags are created only when incrementing. */
 export const adjustTagCounts = async (tags: string[], delta: 1 | -1): Promise<void> => {
