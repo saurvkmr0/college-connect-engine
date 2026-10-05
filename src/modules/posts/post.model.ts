@@ -19,7 +19,8 @@ const postSchema = new Schema<IPost>(
       enum: Object.values(PostType),
       required: true,
     },
-    content: { type: String, required: true, trim: true, maxlength: 2000 },
+    // Optional caption: media-only posts are allowed (the controller requires caption or media).
+    content: { type: String, default: '', trim: true, maxlength: 2000 },
     images: { type: [{ type: String, trim: true, maxlength: 500 }], validate: maxItems(MAX_IMAGES, 'images') },
     // Uploaded media (object keys; URLs are derived on output). Up to 4, any mix of images/videos.
     media: {

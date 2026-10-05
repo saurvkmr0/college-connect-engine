@@ -17,9 +17,13 @@ import {
 export const createPost = asyncHandler(async (req, res) => {
   const content = str(req.body?.content);
   const type = str(req.body?.type);
-  if (!content || !type) throw new ApiError(400, 'VALIDATION_ERROR', 'Content and post type are required');
+  if (!type) throw new ApiError(400, 'VALIDATION_ERROR', 'Post type is required');
 
   const rawMedia = Array.isArray(req.body?.media) ? req.body.media : [];
+  // The caption is optional, but a post needs something to show.
+  if (!content && rawMedia.length === 0) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Add a caption or at least one photo/video');
+  }
   if (rawMedia.length > MAX_POST_MEDIA) {
     throw new ApiError(400, 'VALIDATION_ERROR', `At most ${MAX_POST_MEDIA} media items per post`);
   }
