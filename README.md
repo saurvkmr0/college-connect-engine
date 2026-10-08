@@ -162,8 +162,9 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /api/posts/:postId/comments` - Add comment, or a reply with `parentId` (one level: a reply to a reply joins the same thread; rate-limited)
 - `GET /api/posts/:postId/upvoters` - Who upvoted
 - `GET /api/posts/:postId/likers` - Who liked (same visibility as the post)
-- `GET /api/posts/:postId/comments?page=&limit=` - Top-level comments, newest first, with `replyCount`
-- `GET /api/posts/:postId/comments/:commentId/replies` - A thread's replies, newest first
+- `GET /api/posts/:postId/comments?page=` - 25 top-level comments per page (newest first), each with its first 10 replies
+  (oldest first) and `replyCount`, in one aggregation; `hasMore` tells the client to load the next page
+- `GET /api/posts/:postId/comments/:commentId/replies?page=` - "View more replies": 10 per page, oldest first (`hasMore`)
 - `PATCH /api/posts/:postId/comments/:commentId` - Edit own comment
 - `DELETE /api/posts/:postId/comments/:commentId` - Comment author or post author; a top-level comment takes its replies
 - `POST /api/posts/:postId/comments/:commentId/like` - Toggle like

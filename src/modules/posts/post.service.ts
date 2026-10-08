@@ -65,6 +65,20 @@ export const togglePostReaction = async (
 /** `'name avatar role'` -> `{ name: 1, avatar: 1, role: 1 }` for $lookup projections. */
 const toProjection = (fields: string) => Object.fromEntries(fields.split(' ').map((f) => [f, 1]));
 
+/** Joins `author` with public fields only (feeds, comments). */
+export const lookupAuthor: [PipelineStage.Lookup, PipelineStage.Unwind] = [
+  {
+    $lookup: {
+      from: User.collection.name,
+      localField: 'author',
+      foreignField: '_id',
+      pipeline: [{ $project: toProjection(AUTHOR_FIELDS) }],
+      as: 'author',
+    },
+  },
+  { $unwind: '$author' },
+];
+
 /**
  * Shared post-list pipeline (feeds + college profile): match -> rank -> paginate -> join author/college.
  * The joins only return public fields, so emails and verification data never leak.
@@ -79,16 +93,7 @@ export const feedPipeline = (
   ...rank,
   { $skip: skip },
   { $limit: limit },
-  {
-    $lookup: {
-      from: User.collection.name,
-      localField: 'author',
-      foreignField: '_id',
-      pipeline: [{ $project: toProjection(AUTHOR_FIELDS) }],
-      as: 'author',
-    },
-  },
-  { $unwind: '$author' },
+  ...lookupAuthor,
   {
     $lookup: {
       from: College.collection.name,

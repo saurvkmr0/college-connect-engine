@@ -1,11 +1,11 @@
-import mongoose, { Types } from 'mongoose';
+import mongoose, { PipelineStage, Types } from 'mongoose';
 import { Request } from 'express';
 import { ApiError, asyncHandler, sendSuccess } from '../../utils/apiError';
 import { parsePagination, str } from '../../utils/request';
 import { AUTHOR_FIELDS } from '../users/user.model';
 import { Comment } from './comment.model';
 import { Post } from './post.model';
-import { assertPostVisible } from './post.service';
+import { assertPostVisible, lookupAuthor } from './post.service';
 
 /** Comment text from the body: required, trimmed (the schema caps the length). */
 const readContent = (body: unknown): string => {
@@ -14,8 +14,13 @@ const readContent = (body: unknown): string => {
   return content;
 };
 
+const COMMENTS_PER_PAGE = 25;
+/** Replies embedded per comment, and per "View more replies" page. */
+const REPLIES_PER_PAGE = 10;
+
 /** Comments saved before likes existed have no `likes`; lean reads skip schema defaults. */
 const withLikes = <T extends { likes?: unknown[] }>(c: T) => ({ ...c, likes: c.likes ?? [] });
+const withLikesStage: PipelineStage.AddFields = { $addFields: { likes: { $ifNull: ['$likes', []] } } };
 
 /** A comment of a post the caller can see; 404 when either is missing or the id is malformed. */
 const findComment = async (req: Request) => {
@@ -47,37 +52,58 @@ export const addComment = asyncHandler(async (req, res) => {
   res.status(201).json({ comment });
 });
 
-/** Top-level comments, newest first, each with its `replyCount`. */
+/**
+ * One aggregation per page: 25 top-level comments (newest first), each with its first 10 replies
+ * (oldest first), `replyCount`, and authors joined with public fields only.
+ */
 export const getComments = asyncHandler(async (req, res) => {
   const { postId } = req.params;
   await assertPostVisible(postId, req.user!);
 
-  const { page, limit, skip } = parsePagination(req.query, 100);
-  const comments = await Comment.find({ post: postId, parent: null })
-    .populate('author', AUTHOR_FIELDS)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean();
-  const counts = await Comment.aggregate<{ _id: Types.ObjectId; n: number }>([
-    { $match: { parent: { $in: comments.map((c) => c._id) } } },
-    { $group: { _id: '$parent', n: { $sum: 1 } } },
+  const { page } = parsePagination(req.query);
+  const rows = await Comment.aggregate([
+    { $match: { post: new Types.ObjectId(postId), parent: null } },
+    { $sort: { createdAt: -1 } },
+    { $skip: (page - 1) * COMMENTS_PER_PAGE },
+    { $limit: COMMENTS_PER_PAGE + 1 }, // one extra tells us whether another page exists
+    ...lookupAuthor,
+    withLikesStage,
+    {
+      $lookup: {
+        from: Comment.collection.name,
+        localField: '_id',
+        foreignField: 'parent',
+        pipeline: [{ $sort: { createdAt: 1 } }, { $limit: REPLIES_PER_PAGE }, ...lookupAuthor, withLikesStage],
+        as: 'replies',
+      },
+    },
+    {
+      $lookup: {
+        from: Comment.collection.name,
+        localField: '_id',
+        foreignField: 'parent',
+        pipeline: [{ $count: 'n' }],
+        as: 'replyStats',
+      },
+    },
+    { $addFields: { replyCount: { $ifNull: [{ $first: '$replyStats.n' }, 0] } } },
+    { $project: { replyStats: 0 } },
   ]);
-  const replyCount = new Map(counts.map((c) => [c._id.toString(), c.n]));
 
-  res.json({ comments: comments.map((c) => ({ ...withLikes(c), replyCount: replyCount.get(c._id.toString()) ?? 0 })), page, limit });
+  res.json({ comments: rows.slice(0, COMMENTS_PER_PAGE), page, hasMore: rows.length > COMMENTS_PER_PAGE });
 });
 
-/** A thread's replies, newest first. */
+/** "View more replies": a thread's replies, oldest first, 10 per page (page 1 = the embedded ones). */
 export const getReplies = asyncHandler(async (req, res) => {
   const comment = await findComment(req);
-  // ponytail: newest 100 replies only; page them if threads get that long.
-  const replies = await Comment.find({ parent: comment._id })
+  const { page, limit, skip } = parsePagination(req.query, REPLIES_PER_PAGE);
+  const rows = await Comment.find({ parent: comment._id })
     .populate('author', AUTHOR_FIELDS)
-    .sort({ createdAt: -1 })
-    .limit(100)
+    .sort({ createdAt: 1 })
+    .skip(skip)
+    .limit(limit + 1)
     .lean();
-  res.json({ replies: replies.map(withLikes) });
+  res.json({ replies: rows.slice(0, limit).map(withLikes), page, hasMore: rows.length > limit });
 });
 
 /** Only the comment's author can edit it. */
