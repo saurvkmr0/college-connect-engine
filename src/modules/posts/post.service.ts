@@ -1,4 +1,4 @@
-import { FilterQuery, PipelineStage, Types } from 'mongoose';
+import { ClientSession, FilterQuery, PipelineStage, Types } from 'mongoose';
 import { AuthUser, IPost, PostType } from '../../types';
 import { ApiError } from '../../utils/apiError';
 import { College, COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
@@ -27,12 +27,13 @@ export const normalizeTags = (raw: unknown): string[] => {
 };
 
 /** Adjusts trending-tag counters in one round trip. New tags are created only when incrementing. */
-export const adjustTagCounts = async (tags: string[], delta: 1 | -1): Promise<void> => {
+export const adjustTagCounts = async (tags: string[], delta: 1 | -1, session?: ClientSession): Promise<void> => {
   if (tags.length === 0) return;
   await Tag.bulkWrite(
     tags.map((name) => ({
       updateOne: { filter: { name }, update: { $inc: { postCount: delta } }, upsert: delta > 0 },
-    }))
+    })),
+    { session }
   );
 };
 

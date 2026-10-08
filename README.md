@@ -153,7 +153,10 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 ### Posts
 - `POST /api/posts` - Create post (verified; max 10 tags, 4 images)
 - `GET /api/posts/:postId` - Get post
-- `DELETE /api/posts/:postId` - Delete own post
+- `PATCH /api/posts/:postId` - Edit own post: `{ content?, tags?, keepMedia?: [publicUrl], media?: [assetId] }`
+  (audience fixed; removed media is deleted from storage after the save)
+- `DELETE /api/posts/:postId` - Delete own post: post + comments + tag counts in one MongoDB transaction
+  (**needs a replica set** - Atlas is one; a plain local `mongod` is not), then its media from storage
 - `POST /api/posts/:postId/like` - Toggle like
 - `POST /api/posts/:postId/upvote` - Toggle upvote (verified faculty/staff/admin)
 - `POST /api/posts/:postId/comments` - Add comment (rate-limited)

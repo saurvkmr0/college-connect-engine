@@ -11,6 +11,7 @@ import {
   getUpvoters,
   toggleLike,
   toggleUpvote,
+  updatePost,
 } from './post.controller';
 
 const router = Router();
@@ -25,6 +26,7 @@ router.get('/:postId/upvoters', getUpvoters);
 router.get('/:postId/likers', getLikers);
 
 router.post('/', requireVerified, createPost);
+router.patch('/:postId', updatePost);
 router.delete('/:postId', deletePost);
 router.post('/:postId/like', reactionLimit, toggleLike);
 router.post('/:postId/upvote', requireVerified, toggleUpvote);

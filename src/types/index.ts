@@ -103,6 +103,8 @@ export interface IPost extends Document {
   college: Types.ObjectId;
   type: PostType;
   content: string;
+  /** Set when the author edits the post. */
+  editedAt?: Date;
   /** Legacy image links (posts created before uploads). */
   images: string[];
   /** Uploaded media - object keys, never URLs. */

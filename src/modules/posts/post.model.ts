@@ -21,6 +21,8 @@ const postSchema = new Schema<IPost>(
     },
     // Optional caption: media-only posts are allowed (the controller requires caption or media).
     content: { type: String, default: '', trim: true, maxlength: 2000 },
+    // Set when the author edits caption, tags or media (shown as "Edited").
+    editedAt: { type: Date },
     images: { type: [{ type: String, trim: true, maxlength: 500 }], validate: maxItems(MAX_IMAGES, 'images') },
     // Uploaded media (object keys; URLs are derived on output). Up to 4, any mix of images/videos.
     media: {
