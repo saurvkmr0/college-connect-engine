@@ -3,9 +3,15 @@ import { authenticate, requireVerified } from '../../middleware/auth';
 import { commentLimit, reactionLimit } from '../../middleware/rateLimit';
 import {
   addComment,
+  deleteComment,
+  getComments,
+  getReplies,
+  toggleCommentLike,
+  updateComment,
+} from './comment.controller';
+import {
   createPost,
   deletePost,
-  getComments,
   getPost,
   getLikers,
   getUpvoters,
@@ -31,5 +37,9 @@ router.delete('/:postId', deletePost);
 router.post('/:postId/like', reactionLimit, toggleLike);
 router.post('/:postId/upvote', requireVerified, toggleUpvote);
 router.post('/:postId/comments', commentLimit, addComment);
+router.get('/:postId/comments/:commentId/replies', getReplies);
+router.patch('/:postId/comments/:commentId', commentLimit, updateComment);
+router.delete('/:postId/comments/:commentId', deleteComment);
+router.post('/:postId/comments/:commentId/like', reactionLimit, toggleCommentLike);
 
 export default router;

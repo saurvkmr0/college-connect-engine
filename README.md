@@ -159,10 +159,14 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
   (**needs a replica set** - Atlas is one; a plain local `mongod` is not), then its media from storage
 - `POST /api/posts/:postId/like` - Toggle like
 - `POST /api/posts/:postId/upvote` - Toggle upvote (verified faculty/staff/admin)
-- `POST /api/posts/:postId/comments` - Add comment (rate-limited)
+- `POST /api/posts/:postId/comments` - Add comment, or a reply with `parentId` (one level: a reply to a reply joins the same thread; rate-limited)
 - `GET /api/posts/:postId/upvoters` - Who upvoted
 - `GET /api/posts/:postId/likers` - Who liked (same visibility as the post)
-- `GET /api/posts/:postId/comments?page=&limit=` - Comments
+- `GET /api/posts/:postId/comments?page=&limit=` - Top-level comments, newest first, with `replyCount`
+- `GET /api/posts/:postId/comments/:commentId/replies` - A thread's replies, newest first
+- `PATCH /api/posts/:postId/comments/:commentId` - Edit own comment
+- `DELETE /api/posts/:postId/comments/:commentId` - Comment author or post author; a top-level comment takes its replies
+- `POST /api/posts/:postId/comments/:commentId/like` - Toggle like
 
 ### Media (uploads straight to storage)
 - `POST /api/media/upload-url` - `{ resourceType, contentType, fileSize, extension, collegeId? }` -> `{ uploadUrl, assetId, key, expiresIn }`

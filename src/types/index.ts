@@ -121,7 +121,11 @@ export interface IComment extends Document {
   _id: Types.ObjectId;
   author: Types.ObjectId;
   post: Types.ObjectId;
+  /** Replies: the top-level comment (threads are one level deep). */
+  parent?: Types.ObjectId;
   content: string;
+  likes: Types.ObjectId[];
+  editedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

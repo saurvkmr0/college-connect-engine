@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { ApiError, asyncHandler } from '../../utils/apiError';
-import { parsePagination, str } from '../../utils/request';
+import { str } from '../../utils/request';
 import { COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
 import { AUTHOR_FIELDS } from '../users/user.model';
 import { Comment } from './comment.model';
@@ -169,30 +169,4 @@ export const toggleUpvote = asyncHandler(async (req, res) => {
   res.json({ message: active ? 'Upvoted' : 'Upvote removed', upvotesCount: count, isUpvoted: active });
 });
 
-export const addComment = asyncHandler(async (req, res) => {
-  const { postId } = req.params;
-  const content = str(req.body?.content);
-  if (!content) throw new ApiError(400, 'VALIDATION_ERROR', 'Comment content is required');
 
-  await assertPostVisible(postId, req.user!);
-  const comment = await Comment.create({ author: req.user!.userId, post: postId, content });
-  await Post.updateOne({ _id: postId }, { $push: { comments: comment._id } });
-  await comment.populate('author', AUTHOR_FIELDS);
-
-  res.status(201).json({ comment });
-});
-
-export const getComments = asyncHandler(async (req, res) => {
-  const { postId } = req.params;
-  await assertPostVisible(postId, req.user!);
-
-  const { page, limit, skip } = parsePagination(req.query, 100);
-  const comments = await Comment.find({ post: postId })
-    .populate('author', AUTHOR_FIELDS)
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean();
-
-  res.json({ comments, page, limit });
-});
