@@ -7,6 +7,7 @@ import {
   deletePost,
   getComments,
   getPost,
+  getLikers,
   getUpvoters,
   toggleLike,
   toggleUpvote,
@@ -21,6 +22,7 @@ router.use(authenticate);
 router.get('/:postId', getPost);
 router.get('/:postId/comments', getComments);
 router.get('/:postId/upvoters', getUpvoters);
+router.get('/:postId/likers', getLikers);
 
 router.post('/', requireVerified, createPost);
 router.delete('/:postId', deletePost);

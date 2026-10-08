@@ -65,7 +65,7 @@ Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`, `portal` 
 | --- | --- |
 | Signed out | sign up / log in / forgot password |
 | New account (student or authority), email not yet confirmed | only `/auth/me` + verify-account (everything else `403 ACCOUNT_NOT_VERIFIED`) |
-| Any signed-in user | global feed (people/colleges they follow + own posts), like, comment (30 / 10 min), follow people and colleges, see upvoters |
+| Any signed-in user | global feed (people/colleges they follow + own posts), like, comment (30 / 10 min), follow people and colleges, see who liked/upvoted |
 | College-verified | + create posts, read their college feed |
 | Faculty/staff pending or rejected by their college rep | verified-member powers, no upvote (rejected can reapply) |
 | Faculty / staff (approved by their college) / admin | + upvote |
@@ -158,6 +158,7 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /api/posts/:postId/upvote` - Toggle upvote (verified faculty/staff/admin)
 - `POST /api/posts/:postId/comments` - Add comment (rate-limited)
 - `GET /api/posts/:postId/upvoters` - Who upvoted
+- `GET /api/posts/:postId/likers` - Who liked (same visibility as the post)
 - `GET /api/posts/:postId/comments?page=&limit=` - Comments
 
 ### Media (uploads straight to storage)

@@ -85,11 +85,16 @@ export const deletePost = asyncHandler(async (req, res) => {
 });
 
 /** Who upvoted a post - visible to everyone who can see the post. */
-export const getUpvoters = asyncHandler(async (req, res) => {
-  await assertPostVisible(req.params.postId, req.user!);
-  const post = await Post.findById(req.params.postId).select('upvotes').populate('upvotes', AUTHOR_FIELDS).lean();
-  res.json({ upvoters: post?.upvotes ?? [] });
-});
+/** Who reacted to a post - public to everyone who can see the post. Responds `{ [key]: users }`. */
+const listReactors = (field: 'likes' | 'upvotes', key: 'likers' | 'upvoters') =>
+  asyncHandler(async (req, res) => {
+    await assertPostVisible(req.params.postId, req.user!);
+    const post = await Post.findById(req.params.postId).select(field).populate(field, AUTHOR_FIELDS).lean();
+    res.json({ [key]: post?.[field] ?? [] });
+  });
+
+export const getUpvoters = listReactors('upvotes', 'upvoters');
+export const getLikers = listReactors('likes', 'likers');
 
 export const toggleLike = asyncHandler(async (req, res) => {
   const { active, count } = await togglePostReaction(req.params.postId, 'likes', req.user!);
