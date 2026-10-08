@@ -30,8 +30,10 @@ router.put('/:collegeId/domains', adminOnly, updateCollegeDomains);
 router.post('/:collegeId/domains', adminOnly, addCollegeDomains);
 router.delete('/:collegeId/domains/:domain', adminOnly, removeCollegeDomain);
 
+// --- Public: the college picker on the signup form (approved colleges' names and email domains only) ---
+router.get('/', getColleges);
+
 // --- Any signed-in user (search before /:collegeId so it is not read as an id) ---
-router.get('/', authenticate, getColleges);
 router.get('/search', authenticate, searchColleges);
 router.get('/:collegeId', authenticate, getCollegeById);
 router.get('/:collegeId/posts', authenticate, getCollegePosts);

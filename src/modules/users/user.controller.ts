@@ -5,12 +5,12 @@ import { escapeRegex, parsePagination, str } from '../../utils/request';
 import { COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
 import { Post } from '../posts/post.model';
 import { feedPipeline, NEWEST_FIRST } from '../posts/post.service';
-import { AUTHOR_FIELDS, MEMBER_ROLES, PUBLIC_USER_FIELDS, User } from './user.model';
+import { AUTHOR_FIELDS, MEMBER_ROLES, PUBLIC_USER_FIELDS, User, withApprovedDesignation } from './user.model';
 
 /** Public profile: public fields + follow counts, and whether the viewer follows them. */
 export const getUserProfile = asyncHandler(async (req, res) => {
   const user = await User.findOne({ _id: req.params.userId, role: { $in: MEMBER_ROLES } })
-    .select(`${PUBLIC_USER_FIELDS} followers following`)
+    .select(`${PUBLIC_USER_FIELDS} facultyStatus followers following`)
     .populate('college', COLLEGE_SUMMARY_FIELDS)
     .lean();
   if (!user) throw new ApiError(404, 'NOT_FOUND', 'User not found');
@@ -19,7 +19,7 @@ export const getUserProfile = asyncHandler(async (req, res) => {
   const { followers, following, ...profile } = user;
   const viewer = req.user!.userId;
   res.json({
-    user: profile,
+    user: withApprovedDesignation(profile),
     isFollowing: followers.some((id) => id.toString() === viewer),
     followerCount: followers.length,
     followingCount: following.length,
@@ -97,9 +97,9 @@ export const searchUsers = asyncHandler(async (req, res) => {
   // ponytail: unanchored case-insensitive regex scans the collection; switch to a
   // text index / Atlas Search when the user count grows.
   const users = await User.find({ role: { $in: MEMBER_ROLES }, name: { $regex: escapeRegex(query), $options: 'i' } })
-    .select(PUBLIC_USER_FIELDS)
+    .select(`${PUBLIC_USER_FIELDS} facultyStatus`)
     .limit(20)
     .lean();
 
-  res.json({ users });
+  res.json({ users: users.map(withApprovedDesignation) });
 });

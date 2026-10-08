@@ -64,10 +64,10 @@ Modules: `auth`, `users`, `colleges`, `verification`, `posts`, `feed`, `portal` 
 | Who | Can |
 | --- | --- |
 | Signed out | sign up / log in / forgot password |
-| New student, email not yet confirmed | only `/auth/me` + verify-account (everything else `403 ACCOUNT_NOT_VERIFIED`) |
+| New account (student or authority), email not yet confirmed | only `/auth/me` + verify-account (everything else `403 ACCOUNT_NOT_VERIFIED`) |
 | Any signed-in user | global feed (people/colleges they follow + own posts), like, comment (30 / 10 min), follow people and colleges, see upvoters |
 | College-verified | + create posts, read their college feed |
-| Faculty/staff pending college approval | verified-member powers, no upvote |
+| Faculty/staff pending or rejected by their college rep | verified-member powers, no upvote (rejected can reapply) |
 | Faculty / staff (approved by their college) / admin | + upvote |
 | College rep (portal) | verify email, apply, then (approved) edit profile + approve faculty |
 | Admin (env login) | admin panel: colleges + domains |
@@ -96,13 +96,17 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 ## API Endpoints
 
 ### Auth
-- `POST /api/auth/signup` - Create account (`student`, `faculty`, `staff`; anything else -> student). Password 8-72 chars.
+- `POST /api/auth/signup` - Create account. `role`: `student` or `faculty` ("College Authority"; anything else -> student). Password 8-72 chars.
+  Authorities also send `collegeId` + `designation` (max 60) and must use an email on that college's domains;
+  confirming the emailed code also verifies their college (the college is set only then). Upvoting waits for the
+  college rep's approval; profiles and search show the designation only once approved.
 - `POST /api/auth/login` - Sign in
 - `POST /api/auth/admin-login` - Admin panel sign-in (`ADMIN_EMAIL` / `ADMIN_PASSWORD`)
 - `GET /api/auth/me` - Current user (same shape as signup/login `user`)
 - `PATCH /api/auth/profile` - Update `name`, `bio`, `department`, `graduationYear`, `avatarAssetId`, `bannerAssetId`
-- `POST /api/auth/verify-account/request` - Resend the signup code (new students)
+- `POST /api/auth/verify-account/request` - Resend the signup code (new accounts)
 - `POST /api/auth/verify-account/confirm` - `{ otp }` - confirm the signup email
+- `POST /api/auth/faculty-reapply` - A rejected authority asks their college again (3 / 24 h)
 - `POST /api/auth/forgot-password` - `{ email }` - always 200 (never reveals whether the account exists)
 - `POST /api/auth/reset-password` - `{ email, otp, password }` - logs out every session
 
@@ -118,7 +122,7 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `GET /api/users/:userId/followers` / `following`
 
 ### Colleges
-- `GET /api/colleges` - List approved colleges
+- `GET /api/colleges` - List approved colleges with their email domains. **Public** (signup picker)
 - `GET /api/colleges/search?q=` - Search approved, active colleges by name (max 20)
 - `GET /api/colleges/:collegeId` - `{ college, stats, isFollowing }`
 - `GET /api/colleges/:collegeId/posts?page=&limit=` - Members' global posts, newest first
@@ -130,7 +134,7 @@ Behind a reverse proxy set `TRUST_PROXY=1` so limits use the real client IP.
 - `POST /application` - Apply: claim of the college owning the domain, or a new (pending) college
 - `GET /me` - Status, managed college, stats (when approved)
 - `PATCH /college` - Edit profile fields (description, images, location); name/code/domains are admin-only
-- `GET /faculty-requests`, `POST /faculty-requests/:userId/approve|reject` - Approve faculty/staff (reject makes them students)
+- `GET /faculty-requests`, `POST /faculty-requests/:userId/approve|reject` - Pending faculty/staff who confirmed their email, oldest request first. Reject keeps the account (they can reapply)
 
 ### Admin - college applications (`/api/admin/college-applications`)
 - `GET /` - Pending applications (`type: new | claim`)
@@ -178,7 +182,7 @@ against the env values.
   (or promotes the existing user with that email), so the normal
   `authenticate` / `requireRole('admin')` middleware keep working unchanged.
 - `POST /api/auth/signup` silently ignores `admin` - anyone can only register as
-  student, faculty or staff.
+  student or faculty (college authority).
 - Wrong credentials -> `401 INVALID_CREDENTIALS`; env not set -> `503 AUTH_NOT_CONFIGURED`.
 - The panel itself lives at `/admin/colleges` and covers listing, searching, creating,
   editing colleges, managing their domains and enabling/disabling them.

@@ -76,30 +76,32 @@ export const updateCollegeProfile = asyncHandler(async (req, res) => {
 
 const STAFF_ROLES = [UserRole.FACULTY, UserRole.STAFF];
 
-/** Pending faculty/staff of one college. Also scopes approve/reject, so other colleges get 404. */
+/**
+ * Pending faculty/staff of one college who confirmed their email (unconfirmed signups are not
+ * requests yet). Also scopes approve/reject, so other colleges get 404.
+ */
 const pendingFacultyOf = (collegeId: string) => ({
   college: collegeId,
   role: { $in: STAFF_ROLES },
   facultyStatus: 'pending',
+  accountVerified: { $ne: false },
 });
 
 export const listFacultyRequests = asyncHandler(async (req, res) => {
   const requests = await User.find(pendingFacultyOf(req.user!.managedCollegeId!))
-    .select('name avatar role department collegeEmail createdAt')
-    .sort({ createdAt: 1 })
+    .select('name avatar role designation department collegeEmail collegeVerification.collegeEmail facultyRequestedAt createdAt')
+    // Oldest request first; a reapply moves to the back of the queue.
+    .sort({ facultyRequestedAt: 1, createdAt: 1 })
     .lean();
   res.json({ requests });
 });
 
-/** Approve grants faculty powers; reject turns the account into a student. */
+/** Approve unlocks upvoting; reject keeps the account as is (they can request again). */
 const decideFaculty = (approve: boolean) =>
   asyncHandler(async (req, res) => {
-    const update = approve
-      ? { $set: { facultyStatus: 'approved' } }
-      : { $set: { role: UserRole.STUDENT }, $unset: { facultyStatus: 1 } };
     const result = await User.updateOne(
       { _id: req.params.userId, ...pendingFacultyOf(req.user!.managedCollegeId!) },
-      update
+      { $set: { facultyStatus: approve ? 'approved' : 'rejected' } }
     );
     if (result.matchedCount === 0) throw new ApiError(404, 'NOT_FOUND', 'Faculty request not found');
     sendSuccess(res, 200, approve ? 'Faculty approved' : 'Faculty request rejected');

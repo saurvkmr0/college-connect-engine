@@ -292,8 +292,9 @@ export const getCollegeStats = async (collegeId: Types.ObjectId | string) => {
   const id = new Types.ObjectId(collegeId);
   const [studentCount, facultyCount, pendingFacultyCount, followerCount, postCount] = await Promise.all([
     User.countDocuments({ college: id, role: UserRole.STUDENT }),
-    User.countDocuments({ college: id, role: { $in: STAFF_ROLES }, facultyStatus: { $ne: 'pending' } }),
-    User.countDocuments({ college: id, role: { $in: STAFF_ROLES }, facultyStatus: 'pending' }),
+    User.countDocuments({ college: id, role: { $in: STAFF_ROLES }, facultyStatus: { $nin: ['pending', 'rejected'] } }),
+    // Same filter as the rep's queue: unconfirmed signups are not requests yet.
+    User.countDocuments({ college: id, role: { $in: STAFF_ROLES }, facultyStatus: 'pending', accountVerified: { $ne: false } }),
     User.countDocuments({ followedColleges: id }),
     Post.countDocuments({ college: id, type: PostType.GLOBAL }),
   ]);

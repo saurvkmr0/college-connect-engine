@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import { UserRole } from '../../types';
 import { ApiError } from '../../utils/apiError';
 import { extractDomain, isValidEmail, normalizeEmail } from '../../utils/emailValidation';
@@ -12,6 +13,22 @@ export interface VerifiedCollege {
 }
 
 const MAX_BATCH_YEARS = 8;
+
+/**
+ * The chosen public college, after checking `email` is on one of its domains. Used by college
+ * verification and authority signup. Throws 400 for a missing/unknown college or a domain mismatch.
+ */
+export const findCollegeForEmail = async (rawCollegeId: unknown, email: string) => {
+  const collegeId = str(rawCollegeId);
+  const college = Types.ObjectId.isValid(collegeId)
+    ? await College.findOne({ _id: collegeId, ...PUBLIC_COLLEGE }).select('name domains').lean()
+    : null;
+  if (!college) throw new ApiError(400, 'VALIDATION_ERROR', 'Please choose your college.');
+  if (!college.domains.includes(extractDomain(email))) {
+    throw new ApiError(400, 'EMAIL_DOMAIN_MISMATCH', `This email domain does not belong to ${college.name}.`);
+  }
+  return college;
+};
 
 /** Stream + batch years that students give with their college email. Throws 400 when invalid. */
 const parseStudentDetails = (body: Record<string, unknown>) => {
@@ -45,16 +62,9 @@ export const requestOtp = async (userId: string, rawBody: unknown): Promise<void
     throw new ApiError(409, 'ALREADY_VERIFIED', 'Your college email is already verified.');
   }
 
-  const collegeId = str(body.collegeId);
-  if (!collegeId) throw new ApiError(400, 'VALIDATION_ERROR', 'Please choose your college.');
   const email = normalizeEmail(str(body.email));
   if (!isValidEmail(email)) throw new ApiError(400, 'INVALID_EMAIL', 'Please enter a valid email address.');
-
-  const college = await College.findOne({ _id: collegeId, ...PUBLIC_COLLEGE }).select('name domains').lean();
-  if (!college) throw new ApiError(404, 'NOT_FOUND', 'College not found');
-  if (!college.domains.includes(extractDomain(email))) {
-    throw new ApiError(400, 'EMAIL_DOMAIN_MISMATCH', `This email domain does not belong to ${college.name}.`);
-  }
+  const college = await findCollegeForEmail(body.collegeId, email);
 
   const details = user.role === UserRole.STUDENT ? parseStudentDetails(body) : {};
   await issueOtp('college', userId, email, {

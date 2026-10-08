@@ -2,13 +2,14 @@ import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import { Types } from 'mongoose';
 import { config } from '../../config';
-import { IUser } from '../../types';
+import { IUser, UserRole } from '../../types';
 import { ApiError } from '../../utils/apiError';
 import { isValidEmail, normalizeEmail } from '../../utils/emailValidation';
 import { generateToken } from '../../utils/jwt';
 import { str } from '../../utils/request';
 import { COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
 import { User } from '../users/user.model';
+import { findCollegeForEmail } from '../verification/verification.service';
 
 /** Shared by student signup/login and the college portal. */
 
@@ -48,6 +49,37 @@ export const parseNewAccount = async (body: unknown) => {
     throw new ApiError(409, 'CONFLICT', 'Email already registered');
   }
   return { name, email, password };
+};
+
+/** Authority signup: the college (domain-checked against `email`) and a designation. Throws 400. */
+export const parseAuthorityDetails = async (body: unknown, email: string) => {
+  const source = (body ?? {}) as Record<string, unknown>;
+  const designation = str(source.designation);
+  if (!designation || designation.length > 60) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Please choose your designation (up to 60 characters).');
+  }
+  const college = await findCollegeForEmail(source.collegeId, email);
+  return { college, designation };
+};
+
+/**
+ * The signup email is proven (account OTP or password reset). For authorities that email is
+ * their college email, so it also completes their college verification.
+ */
+export const markEmailConfirmed = async (userId: Types.ObjectId | string): Promise<void> => {
+  const user = await User.findById(userId).select('role accountVerified collegeVerification college');
+  if (!user) return;
+  user.accountVerified = true;
+  const pending = user.collegeVerification;
+  if (user.role === UserRole.FACULTY && pending?.collegeId && !pending.verified) {
+    pending.verified = true;
+    pending.verifiedAt = new Date();
+    // Legacy fields kept in sync, like college verification does.
+    user.college = pending.collegeId;
+    user.collegeEmail = pending.collegeEmail;
+    user.collegeEmailVerified = true;
+  }
+  await user.save();
 };
 
 /** Returns the user when email + password match. One 401 message for every failure. */

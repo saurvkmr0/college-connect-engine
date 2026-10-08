@@ -16,13 +16,15 @@ import {
   findByCredentials,
   getSelf,
   hashPassword,
+  markEmailConfirmed,
+  parseAuthorityDetails,
   parseNewAccount,
   readPassword,
   sessionPayload,
 } from './auth.service';
 
-/** Roles a person may pick at signup. `admin` and `college_rep` are deliberately not among them. */
-const SIGNUP_ROLES: string[] = [UserRole.STUDENT, UserRole.FACULTY, UserRole.STAFF];
+/** Roles a person may pick at signup ("College Authority" is faculty). `admin`, `staff` and `college_rep` are not. */
+const SIGNUP_ROLES: string[] = [UserRole.STUDENT, UserRole.FACULTY];
 
 export const signup = asyncHandler(async (req, res) => {
   const account = await parseNewAccount(req.body);
@@ -31,25 +33,36 @@ export const signup = asyncHandler(async (req, res) => {
   const requestedRole = str(req.body?.role).toLowerCase();
   const role = SIGNUP_ROLES.includes(requestedRole) ? (requestedRole as UserRole) : UserRole.STUDENT;
 
+  // Authorities sign up with their college email; the OTP below proves it.
+  let authority = {};
+  if (role === UserRole.FACULTY) {
+    const { college, designation } = await parseAuthorityDetails(req.body, account.email);
+    // `college` itself is set only once the code proves the email (markEmailConfirmed).
+    authority = {
+      designation,
+      // Upvoting waits for their college rep's approval.
+      facultyStatus: 'pending',
+      facultyRequestedAt: new Date(),
+      collegeVerification: { verified: false, collegeId: college._id, collegeEmail: account.email, method: 'email' },
+    };
+  }
+
   const user = await User.create({
     ...account,
+    ...authority,
     password: await hashPassword(account.password),
     role,
-    // Faculty/staff powers (upvote) wait for their college's approval.
-    ...(role !== UserRole.STUDENT && { facultyStatus: 'pending' }),
-    // Students prove they own their signup email before using the app.
-    ...(role === UserRole.STUDENT && { accountVerified: false }),
+    // Everyone proves they own their signup email before using the app.
+    accountVerified: false,
   });
 
-  if (role === UserRole.STUDENT) {
-    try {
-      await issueOtp('account', user._id.toString(), user.email);
-    } catch (error) {
-      // No code reached the student, so the account must not exist yet: remove it and report
-      // the error. The signup form stays open and the same email can simply be retried.
-      await User.deleteOne({ _id: user._id });
-      throw error;
-    }
+  try {
+    await issueOtp('account', user._id.toString(), user.email);
+  } catch (error) {
+    // No code reached the user, so the account must not exist yet: remove it and report
+    // the error. The signup form stays open and the same email can simply be retried.
+    await User.deleteOne({ _id: user._id });
+    throw error;
   }
 
   res.status(201).json(await sessionPayload(user));
@@ -66,7 +79,7 @@ export const requestAccountCode = asyncHandler(async (req, res) => {
 export const confirmAccount = asyncHandler(async (req, res) => {
   if (req.user!.accountVerified) throw new ApiError(409, 'ALREADY_VERIFIED', 'Your email is already verified.');
   await consumeOtp('account', req.user!.userId, req.user!.email, req.body?.otp);
-  await User.updateOne({ _id: req.user!.userId }, { $set: { accountVerified: true } });
+  await markEmailConfirmed(req.user!.userId);
   res.json({ user: await getSelf(req.user!.userId) });
 });
 
@@ -125,6 +138,16 @@ export const adminLogin = asyncHandler(async (req, res) => {
     token: generateToken(admin),
     user: { id: admin._id, _id: admin._id, name: admin.name, email: admin.email, role: admin.role },
   });
+});
+
+/** A rejected authority asks their college to review them again. */
+export const facultyReapply = asyncHandler(async (req, res) => {
+  const result = await User.updateOne(
+    { _id: req.user!.userId, role: { $in: [UserRole.FACULTY, UserRole.STAFF] }, facultyStatus: 'rejected' },
+    { $set: { facultyStatus: 'pending', facultyRequestedAt: new Date() } }
+  );
+  if (result.matchedCount === 0) throw new ApiError(409, 'CONFLICT', 'There is no rejected request to send again.');
+  res.json({ user: await getSelf(req.user!.userId) });
 });
 
 export const getMe = asyncHandler(async (req, res) => {
@@ -220,7 +243,8 @@ export const resetPassword = asyncHandler(async (req, res) => {
 
   await User.updateOne(
     { _id: user._id },
-    { $set: { password: await hashPassword(plain), accountVerified: true }, $inc: { tokenVersion: 1 } }
+    { $set: { password: await hashPassword(plain) }, $inc: { tokenVersion: 1 } }
   );
+  await markEmailConfirmed(user._id);
   sendSuccess(res, 200, 'Password updated. Sign in with your new password.');
 });

@@ -24,8 +24,8 @@ export type CollegeVerificationMethod = 'email';
 
 /** A rep's application state for the college they manage. */
 export type ManagerStatus = 'pending' | 'approved' | 'rejected';
-/** Faculty/staff approval by their college. Missing = approved (accounts that predate approval). */
-export type FacultyStatus = 'pending' | 'approved';
+/** Faculty/staff approval by their college rep. Missing = approved (accounts that predate approval). */
+export type FacultyStatus = 'pending' | 'approved' | 'rejected';
 
 export interface ICollegeVerification {
   verified: boolean;
@@ -60,6 +60,10 @@ export interface IUser extends Document {
   managerStatus?: ManagerStatus;
   managerRejectionReason?: string;
   facultyStatus?: FacultyStatus;
+  /** Faculty: when they last asked their college for approval (signup or reapply). Orders the rep's queue. */
+  facultyRequestedAt?: Date;
+  /** Faculty: chosen at signup, e.g. 'Professor', 'HOD' or custom text. */
+  designation?: string;
   /** Students: signup email proven by OTP. Missing = verified (accounts that predate it). */
   accountVerified?: boolean;
   /** Bumped by password reset; tokens carrying an older version are rejected. Missing = 0. */

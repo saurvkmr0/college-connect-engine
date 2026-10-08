@@ -3,11 +3,21 @@ import { FacultyStatus, IUser, UserRole } from '../../types';
 
 /** Fields any signed-in user may see about another user. Never includes emails. */
 export const PUBLIC_USER_FIELDS =
-  'name avatar banner role college bio department graduationYear stream batchStart batchEnd createdAt';
+  'name avatar banner role designation college bio department graduationYear stream batchStart batchEnd createdAt';
 /** Students, faculty and staff: the people other users can find, and who use the member login. */
 export const MEMBER_ROLES = [UserRole.STUDENT, UserRole.FACULTY, UserRole.STAFF];
+/**
+ * A designation is only a claim until the college rep approves it, so public views show it
+ * once approved (or for older accounts with no status). Also drops the status itself.
+ */
+export const withApprovedDesignation = <T extends { designation?: string; facultyStatus?: FacultyStatus }>(user: T) => {
+  const { facultyStatus, designation, ...rest } = user;
+  return !facultyStatus || facultyStatus === 'approved' ? { ...rest, designation } : rest;
+};
 /** The author snippet embedded in posts, comments and follower lists. */
 export const AUTHOR_FIELDS = 'name avatar role';
+/** Designations offered at authority signup (the client adds "Other" with free text, max 60). */
+export const DESIGNATIONS = ['Professor', 'Associate Professor', 'Assistant Professor', 'Lecturer', 'HOD', 'Dean', 'Vice Chancellor', 'Registrar', 'Administrator'] as const;
 
 const userSchema = new Schema<IUser>(
   {
@@ -48,7 +58,9 @@ const userSchema = new Schema<IUser>(
     managerStatus: { type: String, enum: ['pending', 'approved', 'rejected'] },
     managerRejectionReason: { type: String, trim: true, maxlength: 500 },
     // --- Faculty/staff approval by their college (missing = approved) ---
-    facultyStatus: { type: String, enum: ['pending', 'approved'] },
+    facultyStatus: { type: String, enum: ['pending', 'approved', 'rejected'] },
+    facultyRequestedAt: { type: Date },
+    designation: { type: String, trim: true, maxlength: 60 },
     // --- Account security ---
     // Students: signup email confirmed by OTP. Missing = verified (accounts that predate this).
     accountVerified: { type: Boolean },
@@ -78,6 +90,6 @@ export const isUserVerified = (
 
 const UPVOTE_ROLES: string[] = [UserRole.FACULTY, UserRole.STAFF, UserRole.ADMIN];
 
-/** Faculty/staff/admin may upvote unless their college has not approved them yet. */
+/** Faculty/staff/admin may upvote once approved by their college (missing status = older approved account). */
 export const canUserUpvote = (user: { role: UserRole; facultyStatus?: FacultyStatus }): boolean =>
-  UPVOTE_ROLES.includes(user.role) && user.facultyStatus !== 'pending';
+  UPVOTE_ROLES.includes(user.role) && (!user.facultyStatus || user.facultyStatus === 'approved');

@@ -22,7 +22,7 @@ import {
 /* Public (any signed-in user)                                          */
 /* ------------------------------------------------------------------ */
 
-/** Colleges students can verify with (college picker): approved + active, with their email domains. */
+/** Public (no login). Colleges for the signup + verification picker: approved + active, with their email domains. */
 export const getColleges = asyncHandler(async (_req, res) => {
   // ponytail: whole list in one response - fine for hundreds of colleges; page it beyond that.
   const colleges = await College.find(PUBLIC_COLLEGE)
