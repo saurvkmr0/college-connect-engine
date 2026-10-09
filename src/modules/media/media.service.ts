@@ -36,6 +36,18 @@ const assertCanManageCollege = async (user: AuthUser, collegeId: string): Promis
  * server-generated key. The client only describes the file; it never chooses the key,
  * bucket or namespace. The signature binds the exact Content-Type and size.
  */
+/** Daily upload quotas (count + bytes), shared by public media and chat files. Count only valid requests. */
+export const assertUploadQuota = async (userId: string, size: number): Promise<void> => {
+  if ((await incrementWindow(`rate:media-daily-count:${userId}`, DAY_SECONDS)) > UPLOAD_LIMITS.perUserPerDay) {
+    logMedia('quota_exceeded', { userId, quota: 'count' });
+    throw new ApiError(429, 'RATE_LIMITED', 'Daily upload limit reached. Please try again tomorrow.');
+  }
+  if ((await incrementWindow(`rate:media-daily-bytes:${userId}`, DAY_SECONDS, size)) > UPLOAD_LIMITS.bytesPerUserPerDay) {
+    logMedia('quota_exceeded', { userId, quota: 'bytes' });
+    throw new ApiError(429, 'RATE_LIMITED', 'Daily upload size limit reached. Please try again tomorrow.');
+  }
+};
+
 export const createUpload = async (user: AuthUser, rawBody: unknown) => {
   const body = (rawBody && typeof rawBody === 'object' ? rawBody : {}) as Record<string, unknown>;
 
@@ -66,15 +78,7 @@ export const createUpload = async (user: AuthUser, rawBody: unknown) => {
     await assertCanManageCollege(user, ownerId);
   }
 
-  // Daily quotas (cost protection) - counted only for valid requests.
-  if ((await incrementWindow(`rate:media-daily-count:${user.userId}`, DAY_SECONDS)) > UPLOAD_LIMITS.perUserPerDay) {
-    logMedia('quota_exceeded', { userId: user.userId, quota: 'count' });
-    throw new ApiError(429, 'RATE_LIMITED', 'Daily upload limit reached. Please try again tomorrow.');
-  }
-  if ((await incrementWindow(`rate:media-daily-bytes:${user.userId}`, DAY_SECONDS, size)) > UPLOAD_LIMITS.bytesPerUserPerDay) {
-    logMedia('quota_exceeded', { userId: user.userId, quota: 'bytes' });
-    throw new ApiError(429, 'RATE_LIMITED', 'Daily upload size limit reached. Please try again tomorrow.');
-  }
+  await assertUploadQuota(user.userId, size);
 
   // Unique, unpredictable, immutable key: a new upload never overwrites an existing object.
   const assetId = randomUUID();

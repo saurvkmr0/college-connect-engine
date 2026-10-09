@@ -18,6 +18,8 @@ export interface IConversation {
   /** Direct only: the two user ids sorted, "a:b". Unique, so a pair has one conversation. */
   directKey?: string;
   lastMessage?: { _id: Types.ObjectId; sender: Types.ObjectId; senderName: string; preview: string; type: string; createdAt: Date };
+  /** Group photo: public object key (like avatars); the JSON replacer turns it into a URL. */
+  photo?: string;
   archivedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -41,6 +43,7 @@ const conversationSchema = new Schema<IConversation>(
       createdAt: Date,
     },
     archivedAt: { type: Date },
+    photo: { type: String },
   },
   { timestamps: true }
 );
@@ -80,8 +83,10 @@ export interface IMessage {
   type: 'text' | 'system';
   text: string;
   system?: { event: SystemEvent; actor?: Types.ObjectId; target?: Types.ObjectId; name?: string };
-  /** Reserved for the attachments part; always [] for now. */
-  attachments: unknown[];
+  /** Files in the private bucket (metadata only; links come from /chat/media/links). */
+  attachments: { mediaId: string; kind: 'image' | 'video' | 'document'; contentType: string; size: number; name: string }[];
+  /** A copy made by "Forward" (the original sender is not shown). */
+  forwarded?: boolean;
   editedAt?: Date;
   deletedAt?: Date;
   createdAt: Date;
@@ -101,7 +106,20 @@ const messageSchema = new Schema<IMessage>(
       target: Schema.Types.ObjectId,
       name: String,
     },
-    attachments: { type: [Schema.Types.Mixed], default: [] },
+    attachments: {
+      type: [
+        {
+          _id: false,
+          mediaId: { type: String, required: true },
+          kind: { type: String, enum: ['image', 'video', 'document'], required: true },
+          contentType: { type: String, required: true },
+          size: { type: Number, required: true },
+          name: { type: String, required: true },
+        },
+      ],
+      default: [],
+    },
+    forwarded: { type: Boolean },
     editedAt: { type: Date },
     deletedAt: { type: Date },
   },
@@ -109,6 +127,8 @@ const messageSchema = new Schema<IMessage>(
 );
 // History: newest first, cursor = _id.
 messageSchema.index({ conversationId: 1, _id: -1 });
+// Download-link checks: which messages use a file.
+messageSchema.index({ 'attachments.mediaId': 1 });
 // A retried send (same client id) maps to the original message.
 messageSchema.index(
   { conversationId: 1, senderId: 1, clientMessageId: 1 },

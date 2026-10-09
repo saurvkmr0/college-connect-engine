@@ -5,6 +5,7 @@ import { ApiError } from '../../utils/apiError';
 import { escapeRegex, str } from '../../utils/request';
 import { User } from '../users/user.model';
 import { CHAT_LIMITS } from './chat.constants';
+import { claimAssets, isObjectKey, releaseObject, unclaimAssets } from '../media/media.service';
 import { emitToUsers } from './chat.events';
 import { forgetMembers } from './chat.members';
 import { Conversation, ConversationMember, GroupInviteLink, GroupRequest, IConversation } from './chat.model';
@@ -109,7 +110,7 @@ export const searchOpenGroups = async (user: AuthUser, rawQuery: unknown) => {
     archivedAt: { $exists: false },
     ...(q && { name: { $regex: escapeRegex(q), $options: 'i' } }),
   })
-    .select('name memberCount allowFaculty')
+    .select('name memberCount allowFaculty photo')
     .sort({ name: 1 })
     .limit(20)
     .lean();
@@ -132,8 +133,26 @@ export const updateGroup = async (user: AuthUser, groupId: unknown, body: unknow
     $set.name = name;
   }
   if (typeof input.allowFaculty === 'boolean' && conversation.visibility === 'open') $set.allowFaculty = input.allowFaculty;
-  if (Object.keys($set).length === 0) return conversation;
-  const updated = await Conversation.findByIdAndUpdate(conversation._id, { $set }, { new: true }).lean();
+  // Group photo: an uploaded public asset id, or '' to remove. The old object is released after saving.
+  const $unset: Record<string, 1> = {};
+  let claimed: string[] = [];
+  if (input.photoAssetId !== undefined) {
+    const assetId = str(input.photoAssetId);
+    if (assetId) {
+      const [media] = await claimAssets(user, assetId, ['group_photo']);
+      $set.photo = media.objectKey;
+      claimed = [media.assetId];
+    } else $unset.photo = 1;
+  }
+  if (Object.keys($set).length === 0 && Object.keys($unset).length === 0) return conversation;
+  let updated;
+  try {
+    updated = await Conversation.findByIdAndUpdate(conversation._id, { $set, $unset }, { new: true }).lean();
+  } catch (error) {
+    await unclaimAssets(claimed);
+    throw error;
+  }
+  if (input.photoAssetId !== undefined && isObjectKey(conversation.photo) && conversation.photo !== $set.photo) await releaseObject(conversation.photo);
   if ($set.name && $set.name !== conversation.name) {
     await postSystemMessage(updated!, user.userId, { event: 'renamed', name: String($set.name) });
   }

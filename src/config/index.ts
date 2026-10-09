@@ -56,6 +56,8 @@ export const config = {
       accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
       secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
       bucket: process.env.R2_BUCKET_NAME || '',
+      /** Private bucket for chat files (never public; signed links only). */
+      privateBucket: process.env.R2_PRIVATE_BUCKET_NAME || '',
     },
   },
   email: {

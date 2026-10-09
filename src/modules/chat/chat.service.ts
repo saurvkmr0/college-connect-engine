@@ -1,10 +1,12 @@
 import { Types } from 'mongoose';
 import { AuthUser } from '../../types';
+import { incrementWindow } from '../../config/redis';
 import { ApiError } from '../../utils/apiError';
 import { escapeRegex, str } from '../../utils/request';
 import { User } from '../users/user.model';
 import { CHAT_LIMITS } from './chat.constants';
 import { emitToUsers } from './chat.events';
+import { claimChatMedia, giveBackRefs, reserveRefs, createChatUpload, idsOf, releaseRefs, signLinks, unclaimChatMedia } from './chat.attachments';
 import { Conversation, ConversationMember, IConversation, IMessage, Message, SystemEvent } from './chat.model';
 import { assertCanDirectMessage, verifiedCollegeOf, verifiedMembersOf } from './chat.policy';
 
@@ -81,7 +83,7 @@ const publishNew = async (conversation: IConversation, message: IMessage, sender
             _id: message._id,
             sender: message.senderId,
             senderName,
-            preview: message.text.slice(0, CHAT_LIMITS.previewChars),
+            preview: previewOf(message),
             type: message.type,
             createdAt: at,
           },
@@ -96,6 +98,25 @@ const publishNew = async (conversation: IConversation, message: IMessage, sender
     conversation: { _id: conversationId, type: conversation.type, name: conversation.name },
   });
   return dto;
+};
+
+/** Chat-list preview: the text, or a label for a file-only message. */
+const previewOf = (m: IMessage): string => {
+  if (m.deletedAt) return '';
+  if (m.text) return m.text.slice(0, CHAT_LIMITS.previewChars);
+  const first = m.attachments?.[0];
+  if (!first) return '';
+  const label = first.kind === 'image' ? '📷 Photo' : first.kind === 'video' ? '🎥 Video' : `📄 ${first.name}`;
+  return m.attachments.length > 1 ? `${label} +${m.attachments.length - 1}` : label;
+};
+
+/** Text is optional when the message carries files. */
+const readOptionalText = (raw: unknown): string => {
+  const text = str(raw);
+  if (text.length > CHAT_LIMITS.messageMaxChars) {
+    throw new ApiError(400, 'VALIDATION_ERROR', `Messages can be at most ${CHAT_LIMITS.messageMaxChars} characters.`);
+  }
+  return text;
 };
 
 const readText = (raw: unknown): string => {
@@ -113,7 +134,8 @@ const readText = (raw: unknown): string => {
  */
 export const sendMessage = async (user: AuthUser, rawConversationId: unknown, body: unknown) => {
   const input = (body ?? {}) as Record<string, unknown>;
-  const text = readText(input.text);
+  const hasFiles = Array.isArray(input.attachments) && input.attachments.length > 0;
+  const text = hasFiles ? readOptionalText(input.text) : readText(input.text);
   const clientMessageId = str(input.clientMessageId);
   if (clientMessageId.length > 64) throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid clientMessageId.');
 
@@ -126,10 +148,12 @@ export const sendMessage = async (user: AuthUser, rawConversationId: unknown, bo
 
   const duplicate = await existing();
   if (duplicate) return duplicate;
+  const attachments = await claimChatMedia(user, input.attachments);
   let message: IMessage;
   try {
-    message = (await Message.create({ ...key, clientMessageId: clientMessageId || undefined, text })).toObject();
+    message = (await Message.create({ ...key, clientMessageId: clientMessageId || undefined, text, attachments })).toObject();
   } catch (error) {
+    await unclaimChatMedia(idsOf(attachments));
     // Two retries raced: the unique index let one through; return that one.
     if ((error as { code?: number }).code === 11000) {
       const winner = await existing();
@@ -187,7 +211,7 @@ const refreshPreview = async (conversation: IConversation, message: IMessage) =>
   if (String(conversation.lastMessage?._id) !== String(message._id)) return;
   await Conversation.updateOne(
     { _id: conversation._id },
-    { $set: { 'lastMessage.preview': message.deletedAt ? '' : message.text.slice(0, CHAT_LIMITS.previewChars) } }
+    { $set: { 'lastMessage.preview': previewOf(message) } }
   );
 };
 
@@ -205,6 +229,7 @@ export const editMessage = async (user: AuthUser, rawMessageId: unknown, rawText
   if (String(message.senderId) !== user.userId || message.type !== 'text' || message.deletedAt) {
     throw new ApiError(403, 'FORBIDDEN', 'You can only edit your own messages.');
   }
+  if (!message.text) throw new ApiError(400, 'VALIDATION_ERROR', 'Files cannot be edited; delete and send again.');
   if (Date.now() - new Date(message.createdAt).getTime() > CHAT_LIMITS.editWindowMs) {
     throw new ApiError(403, 'FORBIDDEN', 'Messages can only be edited within 15 minutes.');
   }
@@ -218,9 +243,15 @@ export const deleteMessage = async (user: AuthUser, rawMessageId: unknown) => {
   const own = String(message.senderId) === user.userId;
   const groupAdmin = conversation.type === 'group' && member.role === 'admin';
   if (message.type !== 'text' || !(own || groupAdmin)) throw new ApiError(403, 'FORBIDDEN', 'You cannot delete this message.');
-  if (message.deletedAt) return (await withSenders([message]))[0];
-  const updated = await Message.findByIdAndUpdate(message._id, { $set: { text: '', deletedAt: new Date() } }, { new: true }).lean();
-  return publishUpdate(conversation, updated!);
+  // Only the request that flips deletedAt releases the files (no double release on retries).
+  const updated = await Message.findOneAndUpdate(
+    { _id: message._id, deletedAt: { $exists: false } },
+    { $set: { text: '', attachments: [], deletedAt: new Date() } },
+    { new: true }
+  ).lean();
+  if (!updated) return (await withSenders([(await Message.findById(message._id).lean())!]))[0];
+  await releaseRefs(idsOf(message.attachments));
+  return publishUpdate(conversation, updated);
 };
 
 /**
@@ -344,6 +375,7 @@ export const listConversations = async (user: AuthUser, query: { cursor?: unknow
         _id: '$c._id',
         type: '$c.type',
         name: '$c.name',
+        photo: '$c.photo',
         visibility: '$c.visibility',
         memberCount: '$c.memberCount',
         lastMessage: '$c.lastMessage',
@@ -399,4 +431,78 @@ export const searchEligible = async (user: AuthUser, rawQuery: unknown) => {
     .sort({ name: 1 })
     .limit(20)
     .lean();
+};
+
+/* ------------------------------------------------------------------ */
+/* Files and forwarding                                                */
+/* ------------------------------------------------------------------ */
+
+/** Upload link for a file to send in this conversation (members only). */
+export const startUpload = async (user: AuthUser, body: unknown) => {
+  const input = (body ?? {}) as Record<string, unknown>;
+  await requireMember(user, input.conversationId);
+  return createChatUpload(user, input);
+};
+
+/**
+ * Signed links for files the caller can see: used by a non-deleted message in a live conversation
+ * they are a member of. Anything else is silently omitted.
+ */
+export const mediaLinks = async (user: AuthUser, rawIds: unknown) => {
+  const ids = [...new Set((Array.isArray(rawIds) ? rawIds : []).slice(0, 50).map((x) => str(x)).filter(Boolean))];
+  if (!ids.length) return {};
+  const mine = await ConversationMember.distinct('conversationId', { userId: new Types.ObjectId(user.userId) });
+  const used: string[] = await Message.distinct('attachments.mediaId', {
+    conversationId: { $in: mine },
+    deletedAt: { $exists: false },
+    'attachments.mediaId': { $in: ids },
+  });
+  const allowed = ids.filter((id) => used.includes(id));
+  return allowed.length ? signLinks(allowed) : {};
+};
+
+const MAX_FORWARD_TARGETS = 25;
+
+/**
+ * Forward a visible message to up to 25 of my chats. Everything is checked before anything is
+ * written; each copy reuses the same stored files (+1 reference each).
+ */
+export const forwardMessage = async (user: AuthUser, rawMessageId: unknown, rawTargets: unknown) => {
+  if (!Array.isArray(rawTargets)) throw new ApiError(400, 'VALIDATION_ERROR', 'Choose chats to forward to.');
+  const targets = [...new Set(rawTargets.map((x) => str(x)).filter(Boolean))];
+  if (!targets.length) throw new ApiError(400, 'VALIDATION_ERROR', 'Choose chats to forward to.');
+  if (targets.length > MAX_FORWARD_TARGETS) throw new ApiError(400, 'VALIDATION_ERROR', `You can forward to at most ${MAX_FORWARD_TARGETS} chats at once.`);
+
+  // Each target counts as one send (30 per 10 s, fails open like sends).
+  const used = await incrementWindow(`rate:chat-send:${user.userId}`, 10, targets.length).catch(() => 0);
+  if (used > 30) throw new ApiError(429, 'RATE_LIMITED', 'You are sending messages too fast. Please slow down.');
+
+  const { message } = await requireMessage(user, rawMessageId);
+  if (message.deletedAt || message.type !== 'text') throw new ApiError(404, 'NOT_FOUND', 'Message not found');
+  const destinations = await Promise.all(targets.map((id) => requireMember(user, id)));
+
+  const me = await User.findById(user.userId).select('name').lean();
+  const fileIds = idsOf(message.attachments);
+  // References first, then all copies in one write: never a copy without its references.
+  await reserveRefs(fileIds, destinations.length);
+  let copies: IMessage[];
+  try {
+    copies = (
+      await Message.insertMany(
+        destinations.map(({ conversation }) => ({
+          conversationId: conversation._id,
+          senderId: user.userId,
+          text: message.text,
+          attachments: message.attachments,
+          forwarded: true,
+        }))
+      )
+    ).map((m) => m.toObject() as IMessage);
+  } catch (error) {
+    await giveBackRefs(fileIds, destinations.length);
+    throw error;
+  }
+  const results = [];
+  for (const [i, { conversation }] of destinations.entries()) results.push(await publishNew(conversation, copies[i], me?.name ?? ''));
+  return results;
 };

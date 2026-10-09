@@ -1,4 +1,5 @@
 import { asyncHandler } from '../../utils/apiError';
+import { discardChatUpload } from './chat.attachments';
 import * as groups from './chat.groups';
 import * as chat from './chat.service';
 
@@ -33,6 +34,20 @@ export const editMessage = asyncHandler(async (req, res) => {
 });
 export const deleteMessage = asyncHandler(async (req, res) => {
   res.json({ message: await chat.deleteMessage(req.user!, req.params.messageId) });
+});
+
+export const startUpload = asyncHandler(async (req, res) => {
+  res.status(201).json(await chat.startUpload(req.user!, req.body));
+});
+export const discardUpload = asyncHandler(async (req, res) => {
+  await discardChatUpload(req.user!, req.params.mediaId);
+  res.json({ ok: true });
+});
+export const mediaLinks = asyncHandler(async (req, res) => {
+  res.json({ links: await chat.mediaLinks(req.user!, req.body?.mediaIds) });
+});
+export const forward = asyncHandler(async (req, res) => {
+  res.status(201).json({ messages: await chat.forwardMessage(req.user!, req.params.messageId, req.body?.conversationIds) });
 });
 
 export const createGroup = asyncHandler(async (req, res) => {

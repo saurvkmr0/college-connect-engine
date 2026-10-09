@@ -109,6 +109,7 @@ const onConnection = (socket: Socket) => {
       return { message: await chat.editMessage(u, p.messageId, p.text) };
     })
   );
+  socket.on('message:forward', handler(socket, async (u, p) => ({ messages: await chat.forwardMessage(u, p.messageId, p.conversationIds) })));
   socket.on('message:delete', handler(socket, async (u, p) => ({ message: await chat.deleteMessage(u, p.messageId) })));
   socket.on('conversation:read', handler(socket, async (u, p) => chat.markRead(u, p.conversationId, p.messageId)));
   socket.on(

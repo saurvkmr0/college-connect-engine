@@ -411,6 +411,37 @@ Indexes are created by Mongoose on startup.
 | `POST /links/:token` | Use a link (410 when expired) |
 | `DELETE /groups/:id/members/:userId`, `POST .../promote`, `POST /groups/:id/step-down`, `POST /groups/:id/leave` | Membership |
 
+### Files, forwarding, group photos
+
+- **Files:**
+  - photos (JPG/PNG/WebP/GIF ≤ 10 MB), videos (MP4/WebM ≤ 50 MB), and documents (PDF, Word, Excel,
+    PowerPoint ≤ 25 MB);
+  - up to 10 per message, text optional;
+  - stored in the **private** bucket `R2_PRIVATE_BUCKET_NAME` and never public.
+- **Upload flow:**
+  1. `POST /chat/uploads` `{ conversationId, contentType, fileSize, fileName }` → `{ mediaId, uploadUrl }`
+     (10 min signed PUT; type and size are bound into the signature; daily upload quotas apply).
+  2. The client PUTs the file.
+  3. Send the message with `attachments: [mediaId]`.
+  - `DELETE /chat/uploads/:mediaId` discards an unsent upload.
+- **Sending:** the server checks each file is the sender's own unused upload whose stored size/type
+  match, then attaches it. Messages store metadata only (`mediaId`, kind, type, size, name).
+- **Viewing:** `POST /chat/media/links` `{ mediaIds }` (≤ 50) → 5-minute signed GETs, only for files
+  used by a non-deleted message in a chat you belong to. Documents are always served as `attachment`
+  (download, never preview); photos and videos `inline`.
+- **Forward:** `POST /chat/messages/:id/forward` `{ conversationIds }` (≤ 25), or socket
+  `message:forward` (ack `{ ok, messages }`).
+  - Copies are labelled `forwarded` and reuse the same stored file; nothing is copied.
+  - Each target counts as one send against the send limit.
+- **File lifetime:**
+  - `chat_media.refCount` counts the non-deleted messages using a file.
+  - Deleting a message decrements it; the last one deletes the object (exactly once).
+  - Failed deletes and unsent uploads (24 h) are cleaned up by the media sweeper.
+- **Group photo:** a public upload (`resourceType: group_photo`), set by admins with
+  `PATCH /chat/groups/:id` `{ photoAssetId }` (`''` removes it); returned as `photo` (URL).
+- **Private bucket CORS:** allow `PUT` and `GET` from `CLIENT_URL` with `Content-Type` and `Range`
+  headers (the same JSON as the public bucket, plus `Range` for video seeking).
+
 ### Socket.IO (same host and port as the API, path `/socket.io`, websocket transport only)
 
 - **Connect:** `io(API_ORIGIN, { transports: ['websocket'], auth: { token } })`.

@@ -25,6 +25,13 @@ router.post('/conversations/:id/messages', sendLimit, c.sendMessage);
 router.post('/conversations/:id/read', c.markRead);
 router.patch('/messages/:messageId', sendLimit, c.editMessage);
 router.delete('/messages/:messageId', c.deleteMessage);
+router.post('/messages/:messageId/forward', c.forward);
+
+// Files (private bucket): upload links, discard, signed download links
+const uploadLimit = rateLimit({ name: 'chat-upload', limit: 20, windowSeconds: 60, keyBy: byUser, failOpen: false });
+router.post('/uploads', uploadLimit, c.startUpload);
+router.delete('/uploads/:mediaId', c.discardUpload);
+router.post('/media/links', rateLimit({ name: 'chat-links', limit: 120, windowSeconds: 60, keyBy: byUser }), c.mediaLinks);
 
 // Groups
 router.post('/groups', groupLimit, c.createGroup);
