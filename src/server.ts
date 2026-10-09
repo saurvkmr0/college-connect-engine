@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import app from './app';
 import { config } from './config';
 import { closeRedis, connectRedis } from './config/redis';
+import { attachRealtime, closeRealtime } from './modules/chat/chat.realtime';
 import { startMediaSweeper } from './modules/media/media.sweeper';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -19,15 +20,18 @@ const start = async () => {
   const server = app.listen(config.port, () => {
     console.log(`Server running on port ${config.port} (${process.env.NODE_ENV || 'development'})`);
   });
+  // Chat sockets share the HTTP server (and its port).
+  await attachRealtime(server);
 
   // Let in-flight requests finish before exiting (deploys, Ctrl+C).
   const shutdown = () => {
     console.log('Shutting down...');
     setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS).unref();
-    server.close(async () => {
-      await Promise.all([mongoose.disconnect(), closeRedis()]);
-      process.exit(0);
-    });
+    // Disconnects sockets (clients reconnect to another instance), then closes the HTTP server
+    // once in-flight requests finish, then the data stores.
+    closeRealtime()
+      .then(() => Promise.all([mongoose.disconnect(), closeRedis()]))
+      .finally(() => process.exit(0));
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

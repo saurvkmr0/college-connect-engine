@@ -1,56 +1,61 @@
 import { RequestHandler } from 'express';
 import { User, canUserUpvote, isUserVerified } from '../modules/users/user.model';
-import { UserRole } from '../types';
+import { AuthUser, UserRole } from '../types';
 import { ApiError, asyncHandler } from '../utils/apiError';
 import { JwtPayload, verifyToken } from '../utils/jwt';
 
 /**
- * Verifies the Bearer token and loads the user once per request.
- * `req.user.role` comes from the DB, so demoting a user takes effect immediately
- * instead of when their token expires. Tokens issued before a password reset are rejected.
+ * Turns a token into the signed-in user, loaded fresh from the DB (so demotions apply at once).
+ * Shared by REST (`authenticate`) and the chat socket handshake. Tokens issued before a password
+ * reset are rejected; unconfirmed accounts get 403 unless `allowUnverified`.
  */
+export const loadAuthUser = async (token: string, allowUnverified = false): Promise<AuthUser> => {
+  if (!token) throw new ApiError(401, 'UNAUTHORIZED', 'No token provided');
+  let payload: JwtPayload;
+  try {
+    payload = verifyToken(token);
+  } catch {
+    throw new ApiError(401, 'UNAUTHORIZED', 'Invalid token');
+  }
+
+  const user = await User.findById(payload.userId)
+    .select(
+      'email role college collegeEmailVerified collegeVerification.verified facultyStatus emailVerified managedCollege managerStatus accountVerified +tokenVersion'
+    )
+    .lean();
+  if (!user) throw new ApiError(401, 'UNAUTHORIZED', 'User not found');
+
+  // A password reset logs out every device: tokens from an older version stop working.
+  if ((payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
+    throw new ApiError(401, 'UNAUTHORIZED', 'Session expired. Please sign in again.');
+  }
+
+  const accountVerified = user.accountVerified !== false;
+  if (!accountVerified && !allowUnverified) {
+    throw new ApiError(403, 'ACCOUNT_NOT_VERIFIED', 'Please verify your email address to continue.');
+  }
+
+  const verified = Boolean(user.college) && isUserVerified(user);
+  return {
+    userId: user._id.toString(),
+    email: user.email,
+    role: user.role,
+    collegeId: user.college?.toString(),
+    verified,
+    canUpvote: verified && canUserUpvote(user),
+    emailVerified: Boolean(user.emailVerified),
+    managedCollegeId: user.managedCollege?.toString(),
+    managerStatus: user.managerStatus,
+    accountVerified,
+  };
+};
+
+/** Express wrapper: reads the Bearer header and sets `req.user`. */
 const authenticateWith = ({ allowUnverified }: { allowUnverified: boolean }) =>
   asyncHandler(async (req, _res, next) => {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) throw new ApiError(401, 'UNAUTHORIZED', 'No token provided');
-
-    let payload: JwtPayload;
-    try {
-      payload = verifyToken(header.slice('Bearer '.length));
-    } catch {
-      throw new ApiError(401, 'UNAUTHORIZED', 'Invalid token');
-    }
-
-    const user = await User.findById(payload.userId)
-      .select(
-        'email role college collegeEmailVerified collegeVerification.verified facultyStatus emailVerified managedCollege managerStatus accountVerified +tokenVersion'
-      )
-      .lean();
-    if (!user) throw new ApiError(401, 'UNAUTHORIZED', 'User not found');
-
-    // A password reset logs out every device: tokens from an older version stop working.
-    if ((payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
-      throw new ApiError(401, 'UNAUTHORIZED', 'Session expired. Please sign in again.');
-    }
-
-    const accountVerified = user.accountVerified !== false;
-    if (!accountVerified && !allowUnverified) {
-      throw new ApiError(403, 'ACCOUNT_NOT_VERIFIED', 'Please verify your email address to continue.');
-    }
-
-    const verified = Boolean(user.college) && isUserVerified(user);
-    req.user = {
-      userId: user._id.toString(),
-      email: user.email,
-      role: user.role,
-      collegeId: user.college?.toString(),
-      verified,
-      canUpvote: verified && canUserUpvote(user),
-      emailVerified: Boolean(user.emailVerified),
-      managedCollegeId: user.managedCollege?.toString(),
-      managerStatus: user.managerStatus,
-      accountVerified,
-    };
+    req.user = await loadAuthUser(header.slice('Bearer '.length), allowUnverified);
     next();
   });
 

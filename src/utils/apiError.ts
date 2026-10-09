@@ -29,6 +29,7 @@ export type ApiErrorCode =
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'LINK_EXPIRED'
   | 'FILE_TOO_LARGE'
   | 'MEDIA_NOT_UPLOADED'
   | 'STORAGE_NOT_CONFIGURED'

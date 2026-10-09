@@ -2,9 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 import { config } from './config';
+import { redisClient } from './config/redis';
+import { socketCount } from './modules/chat/chat.realtime';
 import { errorHandler, notFound } from './middleware/error';
 import applicationRoutes from './modules/applications/applications.routes';
 import authRoutes from './modules/auth/auth.routes';
+import chatRoutes from './modules/chat/chat.routes';
 import collegeRoutes from './modules/colleges/college.routes';
 import feedRoutes from './modules/feed/feed.routes';
 import { mediaJsonReplacer } from './modules/media/media.serializer';
@@ -28,11 +31,12 @@ app.use(express.json({ limit: '100kb' }));
 app.use(morgan(config.isProd ? 'combined' : 'dev'));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), sockets: socketCount(), redis: redisClient.isReady });
 });
 
 // One line per feature module - add new modules here.
 app.use('/api/auth', authRoutes);
+app.use('/api/chat', chatRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/colleges', collegeRoutes);
 app.use('/api/college-verification', verificationRoutes);
