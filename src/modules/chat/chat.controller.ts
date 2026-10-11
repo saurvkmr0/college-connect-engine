@@ -9,7 +9,7 @@ export const listConversations = asyncHandler(async (req, res) => {
   res.json(await chat.listConversations(req.user!, req.query));
 });
 export const unread = asyncHandler(async (req, res) => {
-  res.json({ total: await chat.unreadTotal(req.user!) });
+  res.json(await chat.unreadTotals(req.user!));
 });
 export const startDirect = asyncHandler(async (req, res) => {
   res.json({ conversation: await chat.startDirect(req.user!, req.body?.userId) });

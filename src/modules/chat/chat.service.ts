@@ -278,12 +278,17 @@ export const markRead = async (user: AuthUser, rawConversationId: unknown, rawMe
   return { unreadCount };
 };
 
-export const unreadTotal = async (user: AuthUser): Promise<number> => {
-  const [row] = await ConversationMember.aggregate<{ total: number }>([
+/** Unread messages for the badges: DMs, groups and both together. Only chats with unread are joined. */
+export const unreadTotals = async (user: AuthUser): Promise<{ total: number; direct: number; group: number }> => {
+  const rows = await ConversationMember.aggregate<{ _id: 'direct' | 'group'; n: number }>([
     { $match: { userId: new Types.ObjectId(user.userId), unreadCount: { $gt: 0 } } },
-    { $group: { _id: null, total: { $sum: '$unreadCount' } } },
+    { $lookup: { from: Conversation.collection.name, localField: 'conversationId', foreignField: '_id', pipeline: [{ $project: { type: 1 } }], as: 'c' } },
+    { $unwind: '$c' },
+    { $group: { _id: '$c.type', n: { $sum: '$unreadCount' } } },
   ]);
-  return row?.total ?? 0;
+  const direct = rows.find((r) => r._id === 'direct')?.n ?? 0;
+  const group = rows.find((r) => r._id === 'group')?.n ?? 0;
+  return { total: direct + group, direct, group };
 };
 
 /* ------------------------------------------------------------------ */
