@@ -25,23 +25,31 @@ export const verifiedMembersOf = (collegeId: string | Types.ObjectId) => ({
  * A may message B when either follows the other, or both are verified members of the same college.
  * Throws 404 for unknown/inactive users and 403 when not allowed.
  */
-export const assertCanDirectMessage = async (me: AuthUser, otherId: string): Promise<void> => {
-  if (!Types.ObjectId.isValid(otherId) || otherId === me.userId) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'Choose someone to message.');
-  }
-  if (!(await User.exists({ _id: otherId, ...ACTIVE_MEMBER }))) throw new ApiError(404, 'NOT_FOUND', 'User not found');
-
+/** Who I may DM: people I follow, who follow me, or who are verified at my college. */
+const messageableFilter = (me: AuthUser, otherId: string) => {
   const myCollege = verifiedCollegeOf(me);
-  const allowed = await User.exists({
+  return {
     _id: otherId,
+    ...ACTIVE_MEMBER,
     $or: [
       // I follow them, or they follow me (both directions are on their document).
       { followers: new Types.ObjectId(me.userId) },
       { following: new Types.ObjectId(me.userId) },
       ...(myCollege ? [verifiedMembersOf(myCollege)] : []),
     ],
-  });
-  if (!allowed) {
+  };
+};
+
+/** Non-throwing form, for showing a Message button. */
+export const canDirectMessage = async (me: AuthUser, otherId: string): Promise<boolean> =>
+  Types.ObjectId.isValid(otherId) && otherId !== me.userId && Boolean(await User.exists(messageableFilter(me, otherId)));
+
+export const assertCanDirectMessage = async (me: AuthUser, otherId: string): Promise<void> => {
+  if (!Types.ObjectId.isValid(otherId) || otherId === me.userId) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Choose someone to message.');
+  }
+  if (!(await User.exists({ _id: otherId, ...ACTIVE_MEMBER }))) throw new ApiError(404, 'NOT_FOUND', 'User not found');
+  if (!(await User.exists(messageableFilter(me, otherId)))) {
     throw new ApiError(403, 'FORBIDDEN', 'You can message people you follow, who follow you, or who are verified at your college.');
   }
 };

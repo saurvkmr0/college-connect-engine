@@ -334,14 +334,17 @@ export const startDirect = async (user: AuthUser, rawUserId: unknown) => {
  * My chats, newest activity first (30 per page, `before` = lastMessageAt of the last row).
  * One aggregation: no per-row queries. DMs appear once they have a message.
  */
-export const listConversations = async (user: AuthUser, query: { cursor?: unknown; type?: unknown }) => {
+export const listConversations = async (user: AuthUser, query: { cursor?: unknown; type?: unknown; q?: unknown }) => {
   const me = new Types.ObjectId(user.userId);
   // Cursor "<lastMessageAt ISO>|<member row id>": ties on the timestamp are broken by id, so no row
   // is skipped or repeated at a page boundary.
   const [at, rowId] = str(query.cursor).split('|');
   const atDate = new Date(at ?? '');
   const after = !Number.isNaN(atDate.getTime()) && Types.ObjectId.isValid(rowId ?? '') ? { atDate, rowId: new Types.ObjectId(rowId) } : null;
-  const type = str(query.type);
+  // `q` searches DMs by the other person's name; the name filter must run before the page limit.
+  const q = str(query.q).trim().slice(0, 80);
+  const type = q ? 'direct' : str(query.type);
+  const limit = { $limit: CHAT_LIMITS.pageSize + 1 };
   const rows = await ConversationMember.aggregate([
     {
       $match: {
@@ -359,7 +362,7 @@ export const listConversations = async (user: AuthUser, query: { cursor?: unknow
         $or: [{ 'c.type': 'group' }, { 'c.lastMessage': { $exists: true } }],
       },
     },
-    { $limit: CHAT_LIMITS.pageSize + 1 },
+    ...(q ? [] : [limit]),
     // DMs: the other person.
     {
       $lookup: {
@@ -375,6 +378,7 @@ export const listConversations = async (user: AuthUser, query: { cursor?: unknow
         as: 'other',
       },
     },
+    ...(q ? [{ $match: { 'other.name': { $regex: escapeRegex(q), $options: 'i' } } }, limit] : []),
     {
       $project: {
         _id: '$c._id',
