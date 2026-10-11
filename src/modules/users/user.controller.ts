@@ -5,9 +5,10 @@ import { escapeRegex, parsePagination, str } from '../../utils/request';
 import { COLLEGE_SUMMARY_FIELDS } from '../colleges/college.model';
 import { Post } from '../posts/post.model';
 import { feedPipeline, NEWEST_FIRST } from '../posts/post.service';
+import { canDirectMessage } from '../chat/chat.policy';
 import { AUTHOR_FIELDS, MEMBER_ROLES, PUBLIC_USER_FIELDS, User, withApprovedDesignation } from './user.model';
 
-/** Public profile: public fields + follow counts, and whether the viewer follows them. */
+/** Public profile: public fields + follow counts, whether the viewer follows them, and whether they may DM them. */
 export const getUserProfile = asyncHandler(async (req, res) => {
   const user = await User.findOne({ _id: req.params.userId, role: { $in: MEMBER_ROLES } })
     .select(`${PUBLIC_USER_FIELDS} facultyStatus followers following`)
@@ -23,6 +24,7 @@ export const getUserProfile = asyncHandler(async (req, res) => {
     isFollowing: followers.some((id) => id.toString() === viewer),
     followerCount: followers.length,
     followingCount: following.length,
+    canMessage: await canDirectMessage(req.user!, String(user._id)),
   });
 });
 

@@ -21,6 +21,25 @@ export interface UploadUrl {
   expiresInSeconds: number;
 }
 
+export interface DownloadUrlRequest {
+  key: string;
+  expiresInSeconds: number;
+  /** Shown to the user when saving; sanitized by the provider. */
+  filename: string;
+  /** `attachment` forces a download (documents); `inline` lets images/videos display. */
+  disposition: 'inline' | 'attachment';
+  contentType: string;
+}
+
+/**
+ * Content-Disposition with an ASCII fallback (quotes, backslashes and control characters removed)
+ * plus an RFC 5987 UTF-8 name, so a filename can never inject headers or break the value.
+ */
+export const contentDisposition = (disposition: 'inline' | 'attachment', filename: string): string => {
+  const ascii = filename.normalize('NFKD').replace(/[^\x20-\x7e]/g, '').replace(/["\\]/g, '').trim() || 'file';
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename.replace(/[\r\n]/g, ''))}`;
+};
+
 export interface StoredObject {
   size: number;
   contentType?: string;
@@ -36,6 +55,10 @@ export interface StorageService {
   headObject(key: string): Promise<StoredObject | null>;
   /** Deleting a missing object is not an error. */
   deleteObject(key: string): Promise<void>;
+  /** Server-side copy inside the bucket (no bytes through Node). */
+  copyObject(fromKey: string, toKey: string): Promise<void>;
+  /** Short-lived signed GET for a private object (never stored or logged). */
+  createDownloadUrl(request: DownloadUrlRequest): Promise<string>;
 }
 
 /** Any storage backend failure. The message is for logs only - clients get a generic 503. */

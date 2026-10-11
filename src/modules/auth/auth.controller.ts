@@ -10,6 +10,7 @@ import { constantTimeEqual } from '../../utils/secureCompare';
 import { MEMBER_ROLES, User } from '../users/user.model';
 import { consumeOtp, issueOtp } from '../verification/otp.service';
 import { claimAssets, isObjectKey, releaseObject, unclaimAssets } from '../media/media.service';
+import { disconnectUser } from '../chat/chat.realtime';
 import {
   assertValidPassword,
   BCRYPT_ROUNDS,
@@ -245,6 +246,8 @@ export const resetPassword = asyncHandler(async (req, res) => {
     { _id: user._id },
     { $set: { password: await hashPassword(plain) }, $inc: { tokenVersion: 1 } }
   );
+  // Old sessions stop now: open chat sockets are closed on every instance.
+  disconnectUser(String(user._id));
   await markEmailConfirmed(user._id);
   sendSuccess(res, 200, 'Password updated. Sign in with your new password.');
 });

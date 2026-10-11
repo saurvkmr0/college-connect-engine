@@ -29,6 +29,7 @@ export const MEDIA_RULES = {
   avatar: { maxBytes: { image: 5 * MB }, scope: 'user', folder: (id) => `users/${id}/avatar` },
   banner: { maxBytes: { image: 10 * MB }, scope: 'user', folder: (id) => `users/${id}/banner` },
   post: { maxBytes: { image: 10 * MB, video: 50 * MB }, scope: 'user', folder: (id) => `posts/${id}` },
+  group_photo: { maxBytes: { image: 5 * MB }, scope: 'user', folder: (id) => `users/${id}/group-photos` },
   college_logo: { maxBytes: { image: 5 * MB }, scope: 'college', folder: (id) => `colleges/${id}/logo` },
   college_banner: { maxBytes: { image: 10 * MB }, scope: 'college', folder: (id) => `colleges/${id}/banner` },
 } satisfies Record<string, ResourceRule>;

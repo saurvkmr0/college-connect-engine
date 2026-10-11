@@ -1,6 +1,15 @@
-import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { StorageConfigurationError, StorageError, StorageService, StoredObject, UploadUrl, UploadUrlRequest } from '../storage.types';
+import {
+  contentDisposition,
+  DownloadUrlRequest,
+  StorageConfigurationError,
+  StorageError,
+  StorageService,
+  StoredObject,
+  UploadUrl,
+  UploadUrlRequest,
+} from '../storage.types';
 
 export interface R2Config {
   accountId: string;
@@ -61,6 +70,39 @@ export class R2StorageService implements StorageService {
         signableHeaders: new Set(['content-type', 'content-length']),
       });
       return { url, expiresInSeconds };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageError('R2 presign failed', { cause: error });
+    }
+  }
+
+  async copyObject(fromKey: string, toKey: string): Promise<void> {
+    try {
+      await this.s3().send(
+        new CopyObjectCommand({
+          Bucket: this.cfg.bucket,
+          Key: toKey,
+          CopySource: `${this.cfg.bucket}/${fromKey.split('/').map(encodeURIComponent).join('/')}`,
+        })
+      );
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageError('R2 copy failed', { cause: error });
+    }
+  }
+
+  async createDownloadUrl({ key, expiresInSeconds, filename, disposition, contentType }: DownloadUrlRequest): Promise<string> {
+    if (!(expiresInSeconds > 0 && expiresInSeconds <= MAX_UPLOAD_URL_SECONDS)) {
+      throw new StorageError(`Refusing to sign a download URL valid for ${expiresInSeconds}s`);
+    }
+    const command = new GetObjectCommand({
+      Bucket: this.cfg.bucket,
+      Key: key,
+      ResponseContentDisposition: contentDisposition(disposition, filename),
+      ResponseContentType: contentType,
+    });
+    try {
+      return await getSignedUrl(this.s3(), command, { expiresIn: expiresInSeconds });
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageError('R2 presign failed', { cause: error });

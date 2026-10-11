@@ -2,7 +2,7 @@ import { getStorageService } from '../../services/storage';
 import { isObjectKey, logMedia } from './media.service';
 
 /** Response fields that hold a media reference (object key, or a legacy https link). */
-const MEDIA_REF_FIELDS = new Set(['avatar', 'banner', 'logo', 'bannerImage']);
+const MEDIA_REF_FIELDS = new Set(['avatar', 'banner', 'logo', 'bannerImage', 'photo']);
 
 /** Object key -> public URL (no network). Legacy https links pass through unchanged. */
 export const toPublicUrl = (ref: string): string => {

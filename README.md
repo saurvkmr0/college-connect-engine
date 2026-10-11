@@ -348,3 +348,183 @@ in-app sweeper every 15 minutes (Redis lock: one instance at a time).
    ```
 4. Manual test: sign in, open Profile → upload a picture → Save. The network tab shows a `PUT` to
    `<account>.r2.cloudflarestorage.com` (not to the API), and the avatar loads from `R2_PUBLIC_BASE_URL`.
+
+## Chat (DMs and groups)
+
+Module: `src/modules/chat`.
+- `chat.service.ts` and `chat.groups.ts` hold every rule. REST (`chat.controller.ts`) and sockets
+  (`chat.realtime.ts`) both call them.
+- `chat.policy.ts` decides who may talk to whom.
+- Messages are not end-to-end encrypted: they are protected by TLS in transit and normal database
+  security at rest.
+
+**Rules**
+- **DMs:** you can message someone if either of you follows the other, or you are both verified
+  members of the same college. Existing DMs keep working after an unfollow.
+- **Groups are college-only:**
+  - every member is verified at the group's college;
+  - roles are admin and member;
+  - `open` groups are searchable within the college and joined by request;
+  - `closed` groups are joined by invite or invite link (a link creates a request);
+  - with `allowFaculty` (open only), approved faculty/staff join directly.
+- **Admins:**
+  - can invite, approve/reject requests, remove members (never other admins), promote, rename,
+    and create 24-hour invite links;
+  - when the last admin leaves or steps down, the longest-serving member becomes admin;
+  - when the last member leaves, the group is archived.
+- **History:** new members see the full history.
+- **Messages:**
+  - text up to 4000 characters;
+  - edit your own within 15 minutes;
+  - delete your own, or any message as a group admin (the text is cleared, shown as "Message deleted").
+
+**Data:**
+- `conversations` (unique `directKey` for DM pairs);
+- `conversation_members` (role, read cursor, stored `unreadCount`);
+- `messages` (`{conversationId, _id}` index; unique `clientMessageId` per sender for idempotent retries);
+- `group_requests`;
+- `group_invite_links` (hashed token, TTL index).
+
+Indexes are created by Mongoose on startup.
+
+### REST (`/api/chat`, signed in)
+
+| Method & path | Purpose |
+|---|---|
+| `GET /conversations?type=direct\|group&before=<lastMessageAt>` | My chats (30/page), with `unreadCount`, `lastMessage`, DM `other` |
+| `GET /unread` | `{ total }` for the badge |
+| `POST /direct` `{ userId }` | Start or get a DM |
+| `GET /eligible?q=` | People I can DM |
+| `GET /conversations/:id` | Details, my role, members |
+| `GET /conversations/:id/messages?before=<messageId>` | History, newest first, 30/page, `hasMore` |
+| `POST /conversations/:id/messages` `{ text, clientMessageId }` | Send (also available over the socket) |
+| `POST /conversations/:id/read` `{ messageId }` | Mark read |
+| `PATCH /messages/:messageId` `{ text }` / `DELETE /messages/:messageId` | Edit / delete |
+| `POST /groups` `{ name, visibility, allowFaculty?, inviteUserIds? }` | Create (10/day) |
+| `GET /groups/search?q=` | Open groups of my college |
+| `PATCH /groups/:id` `{ name?, allowFaculty? }` | Admin settings |
+| `POST /groups/:id/join` | Join (faculty + allowFaculty) or request |
+| `POST /groups/:id/invites` `{ userIds }` | Admin invites |
+| `GET /groups/:id/requests`, `POST /groups/:id/requests/:requestId/approve\|reject` | Admin |
+| `GET /invites`, `POST /invites/:requestId/accept\|decline` | My invites |
+| `POST /groups/:id/links` → `{ token, expiresAt }` | Admin: 24 h link (30/hour); the app shares `/join/<token>` |
+| `POST /links/:token` | Use a link (410 when expired) |
+| `DELETE /groups/:id/members/:userId`, `POST .../promote`, `POST /groups/:id/step-down`, `POST /groups/:id/leave` | Membership |
+
+### Files, forwarding, group photos
+
+- **Files:**
+  - photos (JPG/PNG/WebP/GIF ≤ 10 MB), videos (MP4/WebM ≤ 50 MB), and documents (PDF, Word, Excel,
+    PowerPoint ≤ 25 MB);
+  - up to 10 per message, text optional;
+  - stored in the **private** bucket `R2_PRIVATE_BUCKET_NAME` and never public.
+- **Upload flow:**
+  1. `POST /chat/uploads` `{ conversationId, contentType, fileSize, fileName }` → `{ mediaId, uploadUrl }`
+     (10 min signed PUT; type and size are bound into the signature; daily upload quotas apply).
+  2. The client PUTs the file.
+  3. Send the message with `attachments: [mediaId]`.
+  - `DELETE /chat/uploads/:mediaId` discards an unsent upload.
+- **Sending:** the server checks each file is the sender's own unused upload whose stored size/type
+  match, then attaches it. Messages store metadata only (`mediaId`, kind, type, size, name).
+- **Viewing:** `POST /chat/media/links` `{ mediaIds }` (≤ 50) → 5-minute signed GETs, only for files
+  used by a non-deleted message in a chat you belong to. Documents are always served as `attachment`
+  (download, never preview); photos and videos `inline`.
+- **Forward:** `POST /chat/messages/:id/forward` `{ conversationIds }` (≤ 25), or socket
+  `message:forward` (ack `{ ok, messages }`).
+  - Copies are labelled `forwarded` and reuse the same stored file; nothing is copied.
+  - Each target counts as one send against the send limit.
+- **File lifetime:**
+  - `chat_media.refCount` counts the non-deleted messages using a file.
+  - Deleting a message decrements it; the last one deletes the object (exactly once).
+  - Failed deletes and unsent uploads (24 h) are cleaned up by the media sweeper.
+- **Group photo:** a public upload (`resourceType: group_photo`), set by admins with
+  `PATCH /chat/groups/:id` `{ photoAssetId }` (`''` removes it); returned as `photo` (URL).
+- **Private bucket CORS:** allow `PUT` and `GET` from `CLIENT_URL` with `Content-Type` and `Range`
+  headers (the same JSON as the public bucket, plus `Range` for video seeking).
+
+### Socket.IO (same host and port as the API, path `/socket.io`, websocket transport only)
+
+- **Connect:** `io(API_ORIGIN, { transports: ['websocket'], auth: { token } })`.
+  - The token is checked like REST: an old token after a password reset is refused.
+  - Every mutating event re-checks the token; a revoked session is disconnected.
+
+**Client to server** (each with an ack `{ ok, error?: { code, message }, ... }`):
+
+| Event | Payload | Ack |
+|---|---|---|
+| `message:send` | `{ conversationId, clientMessageId, text }` | `{ ok, message }` once the message is saved in MongoDB |
+| `message:edit` | `{ messageId, text }` | `{ ok, message }` |
+| `message:delete` | `{ messageId }` | `{ ok, message }` |
+| `conversation:read` | `{ conversationId, messageId }` | `{ ok, unreadCount }` |
+| `presence:get` | `{ userIds }` (max 50) | `{ ok, online }` |
+| `typing` | `{ conversationId, typing }` | none (best effort, 20/10 s) |
+
+**Server to client:**
+
+| Event | Payload |
+|---|---|
+| `message:new` | `{ conversationId, message }` |
+| `message:updated` | `{ conversationId, message }` |
+| `conversation:read` | `{ conversationId, userId, messageId }` (DM "seen"; my other devices) |
+| `conversation:updated` | `{ conversationId }` (refetch: membership, rename, archive) |
+| `typing` | `{ conversationId, userId, name, typing }` (clients hide it after 6 s) |
+| `sync` | `{}` on every connect: refetch the chat list and the open chat |
+
+**Delivery semantics:**
+- ✓ (the ack) means saved.
+- ✓✓ means the other member's read cursor passed the message (DMs only).
+- There is no "delivered" state.
+- Events are hints, MongoDB is the source of truth: a client that missed events (offline, an
+  instance restart between saving and publishing) catches up on `sync`.
+- No outbox: the worst case is a delayed event, never a lost message.
+
+**Limits:**
+- `message:send`/`edit`: 30 per 10 s per user (shared with REST). It **fails open** if Redis is
+  down, so chat keeps working.
+- Groups: 10 per day. Links: 30 per hour. Membership actions: 60 per 10 min.
+- Group size: `CHAT_GROUP_MAX_MEMBERS` (100).
+
+### Scaling and deployment
+
+- **One instance (Render today):** nothing extra; Render supports WebSockets on the same service.
+- **Several instances:** point them all at the same `REDIS_URL`.
+  - The `@socket.io/redis-adapter` (pub/sub on two extra Redis connections per instance) carries
+    events between instances.
+  - Because the transport is websocket-only, **no sticky sessions** are needed.
+  - The load balancer must allow WebSocket upgrades and an idle timeout of at least 60 s.
+- **Redis down:**
+  - sends still save and reach sockets on the same instance;
+  - other instances' clients catch up on reconnect/`sync`;
+  - presence and typing pause.
+- **Graceful shutdown (SIGTERM):** sockets are closed (clients reconnect elsewhere), then HTTP
+  finishes in-flight requests, then Mongo/Redis.
+- **Health:** `GET /api/health` → `{ status, sockets, redis }`.
+- **Logs:** one JSON line per chat event (`scope: chat`): connect/disconnect counts, slow sends
+  (>500 ms), handler errors. Never message text or tokens.
+
+### Load testing
+
+`scripts/chat-load.mjs` opens N sockets, creates one group plus DM pairs in a load-test college,
+sends at a steady rate, and prints send-ack and delivery latency (p50/p95/p99), failures, and a
+health-check latency (event-loop lag proxy). **Never point it at production data.**
+
+```bash
+LOAD_TEST=1 MONGODB_URI=<staging> JWT_SECRET=<same as the API> \
+  node scripts/chat-load.mjs --url https://staging-api.example.com --users 500 --rate 100 --seconds 120 --group 100
+```
+
+- **Suggested acceptance criteria for one instance:**
+  - send-ack p95 < 150 ms and p99 < 400 ms;
+  - delivery p95 < 250 ms;
+  - failures < 0.1%;
+  - health p95 < 50 ms;
+  - stable memory over a 10-minute run.
+- **Scaling the test:** step up users (500 → 2,000 → 5,000) and rate until a criterion breaks, then
+  add instances and repeat to confirm roughly linear scaling.
+- **Watch during the run:** process RSS/heap, CPU, event-loop delay, MongoDB write latency (Atlas
+  metrics), Redis ops/latency, and network out.
+- **Baseline actually measured on a laptop** (single instance, in-memory MongoDB, local Redis):
+  100 sockets, 20 msg/s for 20 s, a 50-member group + 25 DMs → 0 failures, ack p95 25 ms,
+  delivery p95 28 ms.
+
+That baseline is not a production capacity figure.
