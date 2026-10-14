@@ -5,7 +5,7 @@ import mongoose, { Schema, Types } from 'mongoose';
 export type ConversationType = 'direct' | 'group';
 export type GroupVisibility = 'open' | 'closed';
 export type MemberRole = 'admin' | 'member';
-export type SystemEvent = 'created' | 'joined' | 'left' | 'removed' | 'renamed' | 'promoted' | 'demoted';
+export type SystemEvent = 'created' | 'joined' | 'left' | 'removed' | 'renamed' | 'promoted' | 'demoted' | 'pinned';
 
 export interface IConversation {
   _id: Types.ObjectId;
@@ -20,6 +20,8 @@ export interface IConversation {
   lastMessage?: { _id: Types.ObjectId; sender: Types.ObjectId; senderName: string; preview: string; type: string; createdAt: Date };
   /** Group photo: public object key (like avatars); the JSON replacer turns it into a URL. */
   photo?: string;
+  /** Pinned messages, oldest first, at most 3 (shared by everyone in the chat). */
+  pins?: { messageId: Types.ObjectId; pinnedBy: Types.ObjectId; pinnedAt: Date }[];
   archivedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -44,6 +46,7 @@ const conversationSchema = new Schema<IConversation>(
     },
     archivedAt: { type: Date },
     photo: { type: String },
+    pins: { type: [{ _id: false, messageId: Schema.Types.ObjectId, pinnedBy: Schema.Types.ObjectId, pinnedAt: Date }], default: undefined },
   },
   { timestamps: true }
 );
@@ -61,6 +64,10 @@ export interface IConversationMember {
   unreadCount: number;
   /** Copied from the conversation on every message, so "my chats, newest first" is one index. */
   lastMessageAt: Date;
+  /** "Clear chat": I only see messages newer than this one. */
+  clearedBefore?: Types.ObjectId;
+  /** "Delete chat" (DMs): off my list until the next message. */
+  hidden?: boolean;
 }
 
 const memberSchema = new Schema<IConversationMember>({
@@ -71,6 +78,8 @@ const memberSchema = new Schema<IConversationMember>({
   lastReadMessageId: { type: Schema.Types.ObjectId },
   unreadCount: { type: Number, default: 0 },
   lastMessageAt: { type: Date, default: Date.now },
+  clearedBefore: { type: Schema.Types.ObjectId },
+  hidden: { type: Boolean },
 });
 memberSchema.index({ conversationId: 1, userId: 1 }, { unique: true });
 memberSchema.index({ userId: 1, lastMessageAt: -1, _id: -1 });
@@ -103,7 +112,7 @@ const messageSchema = new Schema<IMessage>(
     type: { type: String, enum: ['text', 'system'], default: 'text' },
     text: { type: String, default: '', maxlength: 4000 },
     system: {
-      event: { type: String, enum: ['created', 'joined', 'left', 'removed', 'renamed', 'promoted', 'demoted'] },
+      event: { type: String, enum: ['created', 'joined', 'left', 'removed', 'renamed', 'promoted', 'demoted', 'pinned'] },
       actor: Schema.Types.ObjectId,
       target: Schema.Types.ObjectId,
       name: String,
@@ -184,4 +193,23 @@ export const Conversation = mongoose.model<IConversation>('Conversation', conver
 export const ConversationMember = mongoose.model<IConversationMember>('ConversationMember', memberSchema, 'conversation_members');
 export const Message = mongoose.model<IMessage>('Message', messageSchema);
 export const GroupRequest = mongoose.model<IGroupRequest>('GroupRequest', groupRequestSchema, 'group_requests');
+/** Private bookmarks ("star"): one row per user and message. */
+export interface IChatStar {
+  _id: Types.ObjectId;
+  userId: Types.ObjectId;
+  messageId: Types.ObjectId;
+  conversationId: Types.ObjectId;
+  createdAt: Date;
+}
+const starSchema = new Schema<IChatStar>({
+  userId: { type: Schema.Types.ObjectId, required: true },
+  messageId: { type: Schema.Types.ObjectId, required: true },
+  conversationId: { type: Schema.Types.ObjectId, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+starSchema.index({ userId: 1, messageId: 1 }, { unique: true });
+starSchema.index({ userId: 1, conversationId: 1, _id: -1 });
+starSchema.index({ messageId: 1 });
+export const ChatStar = mongoose.model<IChatStar>('ChatStar', starSchema, 'chat_stars');
+
 export const GroupInviteLink = mongoose.model<IGroupInviteLink>('GroupInviteLink', inviteLinkSchema, 'group_invite_links');

@@ -7,7 +7,7 @@ import { User } from '../users/user.model';
 import { CHAT_LIMITS } from './chat.constants';
 import { emitToUsers } from './chat.events';
 import { claimChatMedia, giveBackRefs, reserveRefs, createChatUpload, idsOf, releaseRefs, signLinks, unclaimChatMedia } from './chat.attachments';
-import { Conversation, ConversationMember, IConversation, IMessage, Message, SystemEvent } from './chat.model';
+import { ChatStar, Conversation, ConversationMember, IConversation, IConversationMember, IMessage, Message, SystemEvent } from './chat.model';
 import { assertCanDirectMessage, verifiedCollegeOf, verifiedMembersOf } from './chat.policy';
 
 /**
@@ -62,7 +62,7 @@ const quoteOf = (original: IMessage | undefined, senders: Map<string, Sender>) =
     : { _id: undefined, senderId: undefined, senderName: '', preview: '', deleted: true };
 
 /** Message DTOs: sender summary, and reply quotes (two batched reads per page, whatever its size). */
-const withSenders = async (messages: IMessage[]) => {
+export const withSenders = async (messages: IMessage[]) => {
   const replyIds = [...new Set(messages.filter((m) => m.replyTo).map((m) => String(m.replyTo)))];
   const originals = replyIds.length ? await Message.find({ _id: { $in: replyIds } }).lean() : [];
   const byMessage = new Map(originals.map((o) => [String(o._id), o]));
@@ -86,11 +86,11 @@ const publishNew = async (conversation: IConversation, message: IMessage, sender
   await Promise.all([
     ConversationMember.updateMany(
       { conversationId, userId: { $ne: message.senderId } },
-      { $set: { lastMessageAt: at }, ...(message.type === 'text' && { $inc: { unreadCount: 1 } }) }
+      { $set: { lastMessageAt: at }, $unset: { hidden: 1 }, ...(message.type === 'text' && { $inc: { unreadCount: 1 } }) }
     ),
     ConversationMember.updateOne(
       { conversationId, userId: message.senderId },
-      { $set: { lastMessageAt: at, lastReadMessageId: message._id, unreadCount: 0 } }
+      { $set: { lastMessageAt: at, lastReadMessageId: message._id, unreadCount: 0 }, $unset: { hidden: 1 } }
     ),
     Conversation.updateOne(
       { _id: conversationId },
@@ -212,20 +212,32 @@ export const postSystemMessage = async (
 
 /** History, newest first, 30 per page; `before` = the oldest message id the client has. */
 export const listMessages = async (user: AuthUser, rawConversationId: unknown, rawBefore: unknown) => {
-  const { conversation } = await requireMember(user, rawConversationId);
+  const { conversation, member } = await requireMember(user, rawConversationId);
   const before = oid(rawBefore);
-  const rows = await Message.find({ conversationId: conversation._id, ...(before && { _id: { $lt: before } }) })
+  const rows = await Message.find({ conversationId: conversation._id, ...visibleTo(member, before) })
     .sort({ _id: -1 })
     .limit(CHAT_LIMITS.pageSize + 1)
     .lean();
-  return {
-    messages: await withSenders(rows.slice(0, CHAT_LIMITS.pageSize)),
-    hasMore: rows.length > CHAT_LIMITS.pageSize,
-  };
+  const page = rows.slice(0, CHAT_LIMITS.pageSize);
+  return { messages: await withStars(user, await withSenders(page)), hasMore: rows.length > CHAT_LIMITS.pageSize };
+};
+
+/** The id range a member may read: after their "clear chat" point, and before a paging cursor. */
+export const visibleTo = (member: Pick<IConversationMember, 'clearedBefore'>, before?: Types.ObjectId | null) =>
+  before || member.clearedBefore
+    ? { _id: { ...(before && { $lt: before }), ...(member.clearedBefore && { $gt: member.clearedBefore }) } }
+    : {};
+
+/** Marks the messages I starred (private: only my own stars are read). */
+export const withStars = async <T extends { _id: Types.ObjectId }>(user: AuthUser, messages: T[]) => {
+  if (!messages.length) return messages;
+  const stars = await ChatStar.find({ userId: user.userId, messageId: { $in: messages.map((m) => m._id) } }).select('messageId').lean();
+  const starred = new Set(stars.map((s) => String(s.messageId)));
+  return messages.map((m) => (starred.has(String(m._id)) ? { ...m, starred: true } : m));
 };
 
 /** Finds a message the caller can act on (they must still be a member of its conversation). */
-const requireMessage = async (user: AuthUser, rawMessageId: unknown) => {
+export const requireMessage = async (user: AuthUser, rawMessageId: unknown) => {
   const messageId = oid(rawMessageId);
   const message = messageId ? await Message.findById(messageId).lean() : null;
   if (!message) throw new ApiError(404, 'NOT_FOUND', 'Message not found');
@@ -278,6 +290,12 @@ export const deleteMessage = async (user: AuthUser, rawMessageId: unknown) => {
   ).lean();
   if (!updated) return (await withSenders([(await Message.findById(message._id).lean())!]))[0];
   await releaseRefs(idsOf(message.attachments));
+  // A deleted message can't stay pinned or starred.
+  const [unpinned] = await Promise.all([
+    Conversation.updateOne({ _id: conversation._id }, { $pull: { pins: { messageId: message._id } } }),
+    ChatStar.deleteMany({ messageId: message._id }),
+  ]);
+  if (unpinned.modifiedCount) emitToUsers(await memberIdsOf(conversation._id), 'conversation:updated', { conversationId: conversation._id });
   return publishUpdate(conversation, updated);
 };
 
@@ -346,7 +364,11 @@ export const startDirect = async (user: AuthUser, rawUserId: unknown) => {
     [user.userId, otherId].map((userId) => ({
       updateOne: {
         filter: { conversationId: conversation!._id, userId: new Types.ObjectId(userId) },
-        update: { $setOnInsert: { role: 'member', joinedAt: now, lastMessageAt: now, unreadCount: 0 } },
+        update: {
+          $setOnInsert: { role: 'member', joinedAt: now, lastMessageAt: now, unreadCount: 0 },
+          // Opening a DM I deleted brings it back to my list.
+          ...(userId === user.userId && { $unset: { hidden: 1 } }),
+        },
         upsert: true,
       },
     })),
@@ -376,6 +398,7 @@ export const listConversations = async (user: AuthUser, query: { cursor?: unknow
     {
       $match: {
         userId: me,
+        hidden: { $ne: true },
         ...(after && { $or: [{ lastMessageAt: { $lt: after.atDate } }, { lastMessageAt: after.atDate, _id: { $lt: after.rowId } }] }),
       },
     },
@@ -414,7 +437,8 @@ export const listConversations = async (user: AuthUser, query: { cursor?: unknow
         photo: '$c.photo',
         visibility: '$c.visibility',
         memberCount: '$c.memberCount',
-        lastMessage: '$c.lastMessage',
+        // After "clear chat" the old preview is gone too.
+        lastMessage: { $cond: [{ $lte: ['$c.lastMessage._id', { $ifNull: ['$clearedBefore', null] }] }, '$$REMOVE', '$c.lastMessage'] },
         lastMessageAt: 1,
         unreadCount: 1,
         role: 1,
@@ -437,17 +461,35 @@ export const listConversations = async (user: AuthUser, query: { cursor?: unknow
 export const getConversation = async (user: AuthUser, rawConversationId: unknown) => {
   const { conversation, member } = await requireMember(user, rawConversationId);
   const members = await ConversationMember.find({ conversationId: conversation._id }).select('userId role joinedAt lastReadMessageId').lean();
-  const people = await User.find({ _id: { $in: members.map((m) => m.userId) } }).select(PUBLIC_PERSON).lean();
+  const direct = conversation.type === 'direct';
+  // Last seen is for DM partners only.
+  const people = await User.find({ _id: { $in: members.map((m) => m.userId) } })
+    .select({ ...PUBLIC_PERSON, ...(direct && { lastSeenAt: 1 }) })
+    .lean();
   const byId = new Map(people.map((p) => [String(p._id), p]));
   const list = members
     .map((m) => ({ user: byId.get(String(m.userId)), role: m.role, joinedAt: m.joinedAt, lastReadMessageId: m.lastReadMessageId }))
     .filter((m) => m.user);
-  return {
-    conversation,
-    role: member.role,
-    members: list,
-    other: conversation.type === 'direct' ? list.find((m) => String(m.user!._id) !== user.userId)?.user : undefined,
-  };
+  const other = direct ? list.find((m) => String(m.user!._id) !== user.userId)?.user : undefined;
+  const { pins: _, ...rest } = conversation;
+  return { conversation: rest, role: member.role, members: list, other, pins: await pinsFor(conversation, member) };
+};
+
+/** Pinned messages I can see (not deleted, not before my clear point), oldest first. */
+const pinsFor = async (conversation: IConversation, member: IConversationMember) => {
+  const ids = (conversation.pins ?? []).map((p) => p.messageId);
+  if (!ids.length) return [];
+  // The clear point goes inside the same _id condition (a separate _id key would replace the $in).
+  const rows = await Message.find({
+    _id: { $in: ids, ...(member.clearedBefore && { $gt: member.clearedBefore }) },
+    conversationId: conversation._id,
+    deletedAt: { $exists: false },
+  }).lean();
+  const names = new Map((await withSenders(rows)).map((m) => [String(m._id), m.sender?.name ?? '']));
+  return ids
+    .map((id) => rows.find((m) => String(m._id) === String(id)))
+    .filter((m): m is NonNullable<typeof m> => Boolean(m))
+    .map((m) => ({ messageId: m._id, senderId: m.senderId, senderName: names.get(String(m._id)) ?? '', preview: previewOf(m) }));
 };
 
 /** People I may start a DM with (follow either way, or verified at my college), by name. */

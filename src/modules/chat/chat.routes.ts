@@ -27,6 +27,17 @@ router.patch('/messages/:messageId', sendLimit, c.editMessage);
 router.delete('/messages/:messageId', c.deleteMessage);
 router.post('/messages/:messageId/forward', c.forward);
 
+// Pins, stars, shared items, clear / delete chat (fail open, like sends)
+const actionLimit = rateLimit({ name: 'chat-action', limit: 60, windowSeconds: 60, keyBy: byUser });
+router.post('/messages/:messageId/pin', actionLimit, c.pin);
+router.delete('/messages/:messageId/pin', actionLimit, c.unpin);
+router.post('/messages/:messageId/star', actionLimit, c.star);
+router.delete('/messages/:messageId/star', actionLimit, c.unstar);
+router.get('/conversations/:id/starred', c.starred);
+router.get('/conversations/:id/shared', c.shared);
+router.post('/conversations/:id/clear', actionLimit, c.clear);
+router.post('/conversations/:id/hide', actionLimit, c.hide);
+
 // Files (private bucket): upload links, discard, signed download links
 const uploadLimit = rateLimit({ name: 'chat-upload', limit: 20, windowSeconds: 60, keyBy: byUser, failOpen: false });
 router.post('/uploads', uploadLimit, c.startUpload);
