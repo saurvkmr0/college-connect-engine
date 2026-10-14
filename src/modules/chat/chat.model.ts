@@ -87,6 +87,8 @@ export interface IMessage {
   attachments: { mediaId: string; kind: 'image' | 'video' | 'document'; contentType: string; size: number; name: string }[];
   /** A copy made by "Forward" (the original sender is not shown). */
   forwarded?: boolean;
+  /** The message this one replies to (same conversation). Resolved to a quote when read. */
+  replyTo?: Types.ObjectId;
   editedAt?: Date;
   deletedAt?: Date;
   createdAt: Date;
@@ -120,6 +122,7 @@ const messageSchema = new Schema<IMessage>(
       default: [],
     },
     forwarded: { type: Boolean },
+    replyTo: { type: Schema.Types.ObjectId },
     editedAt: { type: Date },
     deletedAt: { type: Date },
   },

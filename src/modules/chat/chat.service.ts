@@ -47,16 +47,33 @@ const memberIdsOf = (conversationId: Types.ObjectId) => ConversationMember.disti
 /* ------------------------------------------------------------------ */
 
 /** Message as clients see it: `senderId` plus a `sender` snippet (name/avatar). */
-const toDto = (m: IMessage, sender?: { _id: unknown; name?: string; avatar?: string } | null) => ({
-  ...m,
-  sender: sender ?? null,
-});
+type Sender = { _id: unknown; name?: string; avatar?: string };
 
+/** A reply's quote, from the original as it is now (so edits and deletes show). */
+const quoteOf = (original: IMessage | undefined, senders: Map<string, Sender>) =>
+  original
+    ? {
+        _id: original._id,
+        senderId: original.senderId,
+        senderName: senders.get(String(original.senderId))?.name ?? '',
+        preview: previewOf(original),
+        deleted: Boolean(original.deletedAt),
+      }
+    : { _id: undefined, senderId: undefined, senderName: '', preview: '', deleted: true };
+
+/** Message DTOs: sender summary, and reply quotes (two batched reads per page, whatever its size). */
 const withSenders = async (messages: IMessage[]) => {
-  const ids = [...new Set(messages.map((m) => String(m.senderId)))];
+  const replyIds = [...new Set(messages.filter((m) => m.replyTo).map((m) => String(m.replyTo)))];
+  const originals = replyIds.length ? await Message.find({ _id: { $in: replyIds } }).lean() : [];
+  const byMessage = new Map(originals.map((o) => [String(o._id), o]));
+  const ids = [...new Set([...messages, ...originals].map((m) => String(m.senderId)))];
   const users = await User.find({ _id: { $in: ids } }).select(SENDER_FIELDS).lean();
-  const byId = new Map(users.map((u) => [String(u._id), u]));
-  return messages.map((m) => toDto(m, byId.get(String(m.senderId))));
+  const senders = new Map<string, Sender>(users.map((u) => [String(u._id), u]));
+  return messages.map((m) => ({
+    ...m,
+    sender: senders.get(String(m.senderId)) ?? null,
+    ...(m.replyTo && { replyTo: quoteOf(byMessage.get(String(m.replyTo)), senders) }),
+  }));
 };
 
 /**
@@ -128,6 +145,15 @@ const readText = (raw: unknown): string => {
   return text;
 };
 
+/** Optional reply target: a text message in the same conversation (deleted is fine: the quote says so). */
+const readReplyTo = async (conversationId: Types.ObjectId, raw: unknown): Promise<Types.ObjectId | undefined> => {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const id = oid(raw);
+  const target = id && (await Message.exists({ _id: id, conversationId, type: 'text' }));
+  if (!target) throw new ApiError(400, 'VALIDATION_ERROR', 'You can only reply to a message in this chat.');
+  return target._id;
+};
+
 /**
  * Saves a text message (durable before the caller acks), then publishes it. A retry with the same
  * clientMessageId returns the original message and publishes nothing new.
@@ -148,10 +174,11 @@ export const sendMessage = async (user: AuthUser, rawConversationId: unknown, bo
 
   const duplicate = await existing();
   if (duplicate) return duplicate;
+  const replyTo = await readReplyTo(conversation._id, input.replyToId);
   const attachments = await claimChatMedia(user, input.attachments);
   let message: IMessage;
   try {
-    message = (await Message.create({ ...key, clientMessageId: clientMessageId || undefined, text, attachments })).toObject();
+    message = (await Message.create({ ...key, clientMessageId: clientMessageId || undefined, text, attachments, replyTo })).toObject();
   } catch (error) {
     await unclaimChatMedia(idsOf(attachments));
     // Two retries raced: the unique index let one through; return that one.
