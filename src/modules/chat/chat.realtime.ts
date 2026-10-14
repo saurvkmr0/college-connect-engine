@@ -88,6 +88,10 @@ const onConnection = (socket: Socket) => {
     redisClient.incr(presenceKey(user.userId)).then(touch, () => undefined);
   }
   const heartbeat = setInterval(touch, PRESENCE_REFRESH_MS);
+  // "Last seen": stamped when a connection opens and when the last one closes.
+  // timestamps: false - updatedAt means "profile changed" elsewhere (e.g. the rep application queue).
+  const seen = () => User.updateOne({ _id: user.userId }, { $set: { lastSeenAt: new Date() } }, { timestamps: false }).catch(() => undefined);
+  seen();
   heartbeat.unref();
   log('connect', { sockets: io?.engine.clientsCount });
 
@@ -149,6 +153,9 @@ const onConnection = (socket: Socket) => {
     if (redisClient.isReady) {
       const left = await redisClient.decr(presenceKey(user.userId)).catch(() => 1);
       if (left <= 0) await redisClient.del(presenceKey(user.userId)).catch(() => undefined);
+      if (left <= 0) await seen();
+    } else {
+      await seen();
     }
     log('disconnect', { sockets: io?.engine.clientsCount });
   });

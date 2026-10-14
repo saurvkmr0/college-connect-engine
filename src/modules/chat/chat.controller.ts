@@ -1,6 +1,7 @@
 import { asyncHandler } from '../../utils/apiError';
 import { discardChatUpload } from './chat.attachments';
 import * as groups from './chat.groups';
+import * as organize from './chat.organize';
 import * as chat from './chat.service';
 
 /** Thin REST layer: every rule is in chat.service / chat.groups (shared with the socket handlers). */
@@ -100,4 +101,30 @@ export const stepDown = asyncHandler(async (req, res) => {
 });
 export const leave = asyncHandler(async (req, res) => {
   res.json(await groups.leaveGroup(req.user!, req.params.id));
+});
+
+// Pins, stars, shared items, clear / delete chat
+export const pin = asyncHandler(async (req, res) => {
+  res.json(await organize.pinMessage(req.user!, req.params.messageId));
+});
+export const unpin = asyncHandler(async (req, res) => {
+  res.json(await organize.unpinMessage(req.user!, req.params.messageId));
+});
+export const star = asyncHandler(async (req, res) => {
+  res.json(await organize.starMessage(req.user!, req.params.messageId));
+});
+export const unstar = asyncHandler(async (req, res) => {
+  res.json(await organize.unstarMessage(req.user!, req.params.messageId));
+});
+export const starred = asyncHandler(async (req, res) => {
+  res.json(await organize.listStarred(req.user!, req.params.id, req.query.before));
+});
+export const shared = asyncHandler(async (req, res) => {
+  res.json(await organize.listShared(req.user!, req.params.id, req.query.kind, req.query.before));
+});
+export const clear = asyncHandler(async (req, res) => {
+  res.json(await organize.clearConversation(req.user!, req.params.id));
+});
+export const hide = asyncHandler(async (req, res) => {
+  res.json(await organize.hideConversation(req.user!, req.params.id));
 });

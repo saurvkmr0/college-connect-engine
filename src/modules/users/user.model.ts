@@ -66,6 +66,8 @@ const userSchema = new Schema<IUser>(
     accountVerified: { type: Boolean },
     // Bumped by a password reset so every older token stops working (exact, no clock edge cases).
     tokenVersion: { type: Number, select: false },
+    // Chat "last seen": only DM partners see it, so it is never selected by default.
+    lastSeenAt: { type: Date, select: false },
     // --- Student details from college verification ---
     stream: { type: String, trim: true, maxlength: 100 },
     batchStart: { type: Number, min: 1950, max: 2100 },

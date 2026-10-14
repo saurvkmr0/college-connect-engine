@@ -68,6 +68,8 @@ export interface IUser extends Document {
   accountVerified?: boolean;
   /** Bumped by password reset; tokens carrying an older version are rejected. Missing = 0. */
   tokenVersion?: number;
+  /** Chat: when their last connection closed (or the latest one opened). Shown only to DM partners. */
+  lastSeenAt?: Date;
   /** Students: set by college verification. */
   stream?: string;
   batchStart?: number;
